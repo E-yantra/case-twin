@@ -1,4 +1,4 @@
-const API_BASE = import.meta.env.VITE_API_URL ?? "http://localhost:8000";
+import { API_BASE } from "./api";
 
 export interface MatchItem {
   score: number;
@@ -8,6 +8,8 @@ export interface MatchItem {
   outcome: string;
   outcomeVariant: "success" | "warning" | "neutral";
   image_url: string;
+  asset_id?: string;
+  related_image_urls?: string[];
   age?: number;
   gender?: string;
   pmc_id?: string;
@@ -17,6 +19,60 @@ export interface MatchItem {
   radiology_view?: string;
   case_text?: string;
   raw_payload?: Record<string, any>;
+}
+
+type JsonRecord = Record<string, unknown>;
+
+const PROFILE_ARRAY_PATHS = [
+  ["patient", "comorbidities"], ["patient", "medications"],
+  ["assessment", "suspected_primary"], ["assessment", "differential"],
+  ["assessment", "diagnosis_secondary"],
+  ["findings", "lungs", "consolidation_locations"],
+  ["findings", "lungs", "atelectasis_locations"],
+  ["findings", "devices", "device_list"], ["findings", "other"],
+  ["summary", "key_points"], ["summary", "red_flags"],
+  ["presentation", "differential_diagnosis"],
+  ["plan", "immediate_interventions"], ["plan", "monitoring_recommendations"],
+  ["provenance", "authors"],
+  ["tags", "ml_labels"], ["tags", "gt_labels"], ["tags", "keywords"], ["tags", "mesh_terms"],
+] as const;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+/** Make cached/local-model payloads safe for list rendering in the UI. */
+function normalizeMatchPayload(payload: unknown): Record<string, any> | undefined {
+  if (!isRecord(payload)) return undefined;
+  const normalized: JsonRecord = { ...payload };
+
+  for (const path of PROFILE_ARRAY_PATHS) {
+    let current: JsonRecord = normalized;
+    let completePath = true;
+    for (const key of path.slice(0, -1)) {
+      const next = current[key];
+      if (!isRecord(next)) {
+        completePath = false;
+        break;
+      }
+      current[key] = { ...next };
+      current = current[key] as JsonRecord;
+    }
+    if (!completePath) continue;
+    const field = path[path.length - 1];
+    if (field in current && current[field] != null && !Array.isArray(current[field])) {
+      current[field] = [current[field]];
+    }
+  }
+
+  if ("related_images" in normalized && normalized.related_images != null && !Array.isArray(normalized.related_images)) {
+    normalized.related_images = [normalized.related_images];
+  }
+  return normalized as Record<string, any>;
+}
+
+function normalizeMatch(match: MatchItem): MatchItem {
+  return { ...match, raw_payload: normalizeMatchPayload(match.raw_payload) };
 }
 
 import type { CaseProfile } from "./caseProfileTypes";
@@ -52,7 +108,9 @@ export async function searchByImage(file: File, profile?: CaseProfile, limit = 1
   }
 
   const data = await response.json() as { matches: MatchItem[]; count: number };
-  return data.matches;
+  // The backend normally supplies canonical arrays. This guard keeps one old
+  // or malformed cached enrichment from taking down the complete results view.
+  return data.matches.map(normalizeMatch);
 }
 
 export interface ComparisonInsights {
@@ -65,8 +123,8 @@ export async function compareInsights(originalImage: File, matchItem: MatchItem)
   const formData = new FormData();
   formData.append("original_image", originalImage);
   formData.append("match_diagnosis", matchItem.diagnosis);
-  if (matchItem.image_url) {
-    formData.append("match_image_url", matchItem.image_url);
+  if (matchItem.asset_id) {
+    formData.append("match_asset_id", matchItem.asset_id);
   }
   if (matchItem.raw_payload) {
     formData.append("match_payload", JSON.stringify(matchItem.raw_payload));
@@ -169,9 +227,7 @@ export async function mockIngestImagingFile(fileName: string): Promise<MockAgent
   await delay(700);
 
   const lower = fileName.toLowerCase();
-  const modality = lower.endsWith(".dcm")
-    ? "CT Chest (from DICOM header)"
-    : lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg")
+  const modality = lower.endsWith(".png") || lower.endsWith(".jpg") || lower.endsWith(".jpeg") || lower.endsWith(".webp")
       ? "Chest image upload"
       : "Imaging uploaded";
 
