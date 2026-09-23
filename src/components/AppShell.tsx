@@ -1,5 +1,5 @@
 import { Link, useLocation } from "react-router-dom";
-import { Plus, LayoutDashboard, Clock, FolderOpen, Settings2 } from "lucide-react";
+import { Plus, LayoutDashboard, Clock, FolderOpen, MessageSquare, Settings2 } from "lucide-react";
 
 interface AppShellProps {
   breadcrumb: string;
@@ -29,19 +29,22 @@ export function AppShell({ breadcrumb, children }: AppShellProps) {
               <Link to="/history" className={`px-3 py-1.5 rounded-full text-[13px] font-medium transition-all duration-200 ${path === '/history' ? 'bg-zinc-100/80 text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50'}`}>
                 <div className="flex items-center gap-1.5"><Clock className="w-3.5 h-3.5" strokeWidth={2.5} /> History</div>
               </Link>
-              <Link to="/cases" className={`px-3 py-1.5 rounded-full text-[13px] font-medium transition-all duration-200 ${path === '/cases' ? 'bg-zinc-100/80 text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50'}`}>
+              {/* <Link to="/cases" className={`px-3 py-1.5 rounded-full text-[13px] font-medium transition-all duration-200 ${path === '/cases' ? 'bg-zinc-100/80 text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50'}`}>
                 <div className="flex items-center gap-1.5"><FolderOpen className="w-3.5 h-3.5" strokeWidth={2.5} /> My Cases</div>
+              </Link> */}
+              <Link to="/chat" className={`px-3 py-1.5 rounded-full text-[13px] font-medium transition-all duration-200 ${path === '/chat' ? 'bg-zinc-100/80 text-zinc-900 shadow-sm' : 'text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50'}`}>
+                <div className="flex items-center gap-1.5"><MessageSquare className="w-3.5 h-3.5" strokeWidth={2.5} /> Chat</div>
               </Link>
             </nav>
           </div>
 
           <div className="flex items-center gap-4">
-            <div className="hidden sm:flex items-center gap-1.5">
+            {/* <div className="hidden sm:flex items-center gap-1.5">
               <a href="#" className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-colors">
                 <Settings2 className="h-4 w-4" />
               </a>
               <div className="w-px h-4 bg-zinc-200 mx-1" />
-            </div>
+            </div> */}
 
             {breadcrumb && (
               <div className="hidden lg:flex items-center gap-2 text-[13px] font-medium">
@@ -50,12 +53,12 @@ export function AppShell({ breadcrumb, children }: AppShellProps) {
               </div>
             )}
 
-            <Link to="/">
+            {/* <Link to="/">
               <button className="flex items-center gap-1.5 rounded-full bg-zinc-900 px-4 py-1.5 text-[13px] font-medium text-white shadow-md shadow-zinc-900/10 hover:bg-zinc-800 transition-all active:scale-[0.98]">
                 <Plus className="h-4 w-4" strokeWidth={2.5} />
                 New Case
               </button>
-            </Link>
+            </Link> */}
           </div>
         </div>
       </header>
