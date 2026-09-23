@@ -61,7 +61,7 @@ interface RouteCenter {
   lng?: number;
 }
 
-const stepLabels = ["Upload", "Matches", "Route", "Memo"] as const;
+const stepLabels = ["Upload", "Matches" /*, "Route", "Memo" */] as const;
 
 const matchItems: MatchItem[] = [
   {
@@ -540,7 +540,7 @@ function MatchCard({
 function MatchesScreen({
   selectedMatch,
   onSelectMatch,
-  onContinueToRoute,
+  // onContinueToRoute,
   items,
   isLoading,
   originalFile,
@@ -548,7 +548,7 @@ function MatchesScreen({
 }: {
   selectedMatch: number | null;
   onSelectMatch: (index: number | null) => void;
-  onContinueToRoute: () => void;
+  // onContinueToRoute: () => void;
   items: MatchItem[];
   isLoading: boolean;
   originalFile: File | null;
@@ -712,9 +712,9 @@ function MatchesScreen({
               <MedButton variant="secondary" size="sm" onClick={() => setShowTwinProfile(true)}>
                 Full Profile
               </MedButton>
-              <MedButton variant="primary" size="sm" onClick={onContinueToRoute}>
+              {/* <MedButton variant="primary" size="sm" onClick={onContinueToRoute}>
                 Continue to routing
-              </MedButton>
+              </MedButton> */}
             </div>
           </div>
 
@@ -1845,7 +1845,7 @@ export function DashboardPage() {
             <MatchesScreen
               selectedMatch={selectedMatch}
               onSelectMatch={setSelectedMatch}
-              onContinueToRoute={() => handleStepChange(2)}
+              // onContinueToRoute={() => handleStepChange(2)}
               items={matchResults}
               isLoading={isSearching}
               originalFile={uploadedFile}
