@@ -15,7 +15,7 @@ interface CaseTopBarProps {
 
 export function CaseTopBar({ active, onStepChange }: CaseTopBarProps) {
   return (
-    <header className="fixed left-0 right-0 top-0 z-40 border-b border-zinc-200/80 bg-white/80 shadow-[0_1px_3px_rgba(0,0,0,0.02)] backdrop-blur-xl supports-[backdrop-filter]:bg-white/60 print:hidden">
+    <header className="relative z-40 shrink-0 border-b border-zinc-200/80 bg-white/80 shadow-[0_1px_3px_rgba(0,0,0,0.02)] backdrop-blur-xl supports-[backdrop-filter]:bg-white/60 print:hidden">
       <div className="mr-container flex h-16 items-center justify-between gap-4 py-3">
         <div className="flex items-center gap-2.5 cursor-pointer hover:opacity-90 transition-opacity">
           <div className="flex h-8 w-8 items-center justify-center rounded-[0.4rem] bg-gradient-to-tr from-zinc-900 to-zinc-800 text-white shadow-[0_1px_3px_rgba(0,0,0,0.1)] ring-1 ring-zinc-900/10 transition-transform duration-300 hover:scale-[1.03]">

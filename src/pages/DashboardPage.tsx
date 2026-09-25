@@ -300,7 +300,7 @@ function UploadScreen({
   return (
     <div
       ref={containerRef}
-      className="flex h-[calc(100vh-100px)] gap-0 pt-6"
+      className="flex h-full min-h-0 gap-0 pt-6"
       style={{ overflow: "hidden" }}
     >
       {/* ── Left: Live Case Profile ── */}
@@ -598,12 +598,12 @@ function MatchesScreen({
 
   return (
     <div className={cn(
-      "flex h-[calc(100vh-140px)] gap-6",
+      "flex h-full min-h-0 gap-6",
       selected === null ? "flex-col" : "flex-row"
     )}>
       {/* Left List Container */}
       <div className={cn(
-        "flex flex-col gap-5 transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]",
+        "flex min-h-0 flex-col gap-5 transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]",
         selected === null ? "w-full max-w-[800px] mx-auto opacity-100" : "w-full max-w-[300px] xl:max-w-[380px] shrink-0 opacity-100"
       )}>
         <div className="flex items-center justify-between shrink-0">
@@ -646,7 +646,7 @@ function MatchesScreen({
 
       {/* Right Detail Container (Big Canvas) */}
       {selected !== null && (
-        <div className="flex-1 rounded-2xl border border-zinc-200/80 bg-white shadow-sm flex flex-col overflow-hidden animate-in fade-in zoom-in-95 slide-in-from-right-8 duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]">
+        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm animate-in fade-in zoom-in-95 slide-in-from-right-8 duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]">
           {/* Canvas Header */}
           <div className="flex items-center justify-between border-b border-zinc-100 bg-zinc-50/50 px-6 py-4 shrink-0">
             <div className="flex items-center gap-3">
@@ -1111,7 +1111,7 @@ function RouteScreen({
 
   return (
     <div className={cn(
-      "flex h-[calc(100vh-140px)] gap-6 transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]",
+      "flex h-full min-h-0 gap-6 transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]",
       selectedHospital === null ? "flex-col lg:flex-row" : "flex-col lg:flex-row"
     )}>
       {/* Left Container */}
@@ -1460,7 +1460,7 @@ function MemoScreen({ selectedMatch, selectedHospital, requiredEquipment }: Memo
     .map(([name]) => name);
 
   return (
-    <div className="flex flex-col lg:flex-row gap-6 max-w-[1200px] mx-auto h-[calc(100vh-140px)] print:h-auto print:block print:max-w-none print:m-0 print:p-0">
+    <div className="mx-auto flex h-full min-h-0 max-w-[1200px] flex-col gap-6 lg:flex-row print:m-0 print:block print:h-auto print:max-w-none print:p-0">
       {/* Main Memo Content */}
       <div className="flex-1 w-full max-w-[800px] h-full overflow-y-auto pr-2 pb-8 custom-scrollbar print:max-w-none print:overflow-visible print:p-0">
         <SurfaceCard id="memo-content" className="gap-6 p-8 md:p-10 rounded-2xl shadow-sm border-zinc-200/80 bg-white print:border-none print:shadow-none print:p-0">
@@ -1744,11 +1744,11 @@ export function DashboardPage() {
   };
 
   return (
-    <div className="h-screen overflow-hidden bg-[var(--mr-page)] text-[var(--mr-text)] print:h-auto print:overflow-visible print:bg-white">
+    <div className="flex h-full min-h-0 flex-col overflow-hidden bg-[var(--mr-page)] text-[var(--mr-text)] print:h-auto print:overflow-visible print:bg-white">
       <CaseTopBar active={step} onStepChange={handleStepChange} />
 
       <main
-        className={cn("mr-container h-full pb-6 pt-24", step === 0 ? "overflow-hidden" : "overflow-auto", "print:p-0 print:m-0 print:overflow-visible print:block print:h-auto")}
+        className={cn("mr-container flex min-h-0 flex-1 flex-col pb-6 pt-8", step === 0 ? "overflow-hidden" : "overflow-auto", "print:p-0 print:m-0 print:overflow-visible print:block print:h-auto")}
       >
         {step === 0 ? (
           <UploadScreen
