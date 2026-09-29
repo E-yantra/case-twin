@@ -3,6 +3,8 @@ import { emptyProfile } from "./caseProfileTypes";
 import { API_BASE } from "./api";
 // ─── Confidence scoring ────────────────────────────────────────────────────
 
+export const PROFILE_READY_THRESHOLD = 60; // Confidence % required before matching.
+
 interface ConfidenceField {
     label: string;
     filled: (p: CaseProfile) => boolean;
