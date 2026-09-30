@@ -223,8 +223,6 @@ async def compare_insights(
     orig_region = get_region_text(orig_box) if orig_box else "the affected region"
     match_region = get_region_text(match_box) if match_box else "the affected region"
     
-    import re
-
     # Build a tight prompt that forces a single, concise, non-repeating output
     hpi = parsed_payload.get("presentation", {}).get("hpi", "")
     outcome = parsed_payload.get("outcome", {}).get("detail", "")

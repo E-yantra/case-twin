@@ -540,6 +540,7 @@ function MatchesScreen({
 
   const [showInsights, setShowInsights] = useState(false);
   const [insightsLoading, setInsightsLoading] = useState(false);
+  const [insightsError, setInsightsError] = useState<string | null>(null);
   const [insights, setInsights] = useState<{
     insights_text: string;
     original_box: [number, number, number, number];
@@ -550,26 +551,27 @@ function MatchesScreen({
   useEffect(() => {
     if (selectedMatch !== lastInsightsMatchIdx) {
       setInsights(null);
+      setInsightsError(null);
       setLastInsightsMatchIdx(selectedMatch);
     }
   }, [selectedMatch, lastInsightsMatchIdx]);
 
   // Load insights when selected case changes and toggle is active
   useEffect(() => {
-    if (selected && originalFile && showInsights && !insights && !insightsLoading) {
+    if (selected && originalFile && showInsights && !insights && !insightsLoading && !insightsError) {
       setInsightsLoading(true);
-      import("@/lib/mockUploadApis").then((api) => {
-        api.compareInsights(originalFile, selected)
-          .then((res) => setInsights(res))
-          .catch((err) => console.error(err))
-          .finally(() => setInsightsLoading(false));
-      });
+      import("@/lib/mockUploadApis")
+        .then((api) => api.compareInsights(originalFile, selected))
+        .then((res) => setInsights(res))
+        .catch((err) => setInsightsError(err instanceof Error ? err.message : "Analysis failed. Please try again."))
+        .finally(() => setInsightsLoading(false));
     }
-  }, [selected, originalFile, showInsights, insights, insightsLoading]);
+  }, [selected, originalFile, showInsights, insights, insightsLoading, insightsError]);
 
   // Handle toggle click
   const handleToggleInsights = () => {
     if (!showInsights) {
+      setInsightsError(null);
       setShowInsights(true);
     } else {
       setShowInsights(false);
@@ -763,6 +765,17 @@ function MatchesScreen({
                     <div className="text-[14px] leading-relaxed text-zinc-700 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
                       {insightsLoading ? (
                         <p className="text-zinc-500 italic">Analyzing images and cross-referencing clinical context...</p>
+                      ) : insightsError ? (
+                        <div role="alert" className="space-y-3">
+                          <p className="text-red-700">{insightsError}</p>
+                          <button
+                            type="button"
+                            onClick={() => setInsightsError(null)}
+                            className="rounded-lg border border-[var(--mr-action)] px-3 py-1.5 font-medium text-[var(--mr-action)] hover:bg-[var(--mr-action)]/5"
+                          >
+                            Retry analysis
+                          </button>
+                        </div>
                       ) : insights?.insights_text ? (
                         <div className="prose prose-zinc prose-sm md:prose-base max-w-none 
                             prose-p:leading-relaxed prose-p:text-zinc-700 
