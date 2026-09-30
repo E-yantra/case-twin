@@ -115,8 +115,8 @@ export async function searchByImage(file: File, profile?: CaseProfile, limit = 1
 
 export interface ComparisonInsights {
   insights_text: string;
-  original_box: [number, number, number, number]; // [ymin, xmin, ymax, xmax] max=1000
-  match_box: [number, number, number, number];
+  original_box: [number, number, number, number] | null;
+  match_box: [number, number, number, number] | null;
 }
 
 export async function compareInsights(originalImage: File, matchItem: MatchItem): Promise<ComparisonInsights> {
@@ -126,10 +126,6 @@ export async function compareInsights(originalImage: File, matchItem: MatchItem)
   if (matchItem.asset_id) {
     formData.append("match_asset_id", matchItem.asset_id);
   }
-  if (matchItem.raw_payload) {
-    formData.append("match_payload", JSON.stringify(matchItem.raw_payload));
-  }
-
   const response = await fetch(`${API_BASE}/compare_insights`, {
     method: "POST",
     body: formData,

@@ -11,6 +11,7 @@ load_dotenv()
 
 import io
 import json
+import logging
 import re
 import uuid
 from datetime import datetime
@@ -21,12 +22,13 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
-from embedding_service import generate_embedding, query_medgemma
+from embedding_service import generate_embedding, query_medgemma, query_medgemma_comparison
 from qdrant_service import search_similar
 from manifest import asset_path
 from document_text import DocumentExtractionError, extract_document_text
 
 app = FastAPI(title="CaseTwin API", version="1.0.0")
+logger = logging.getLogger(__name__)
 
 # Allow the Vite dev server (and any localhost port) to call the API
 _configured_origins = [origin.strip() for origin in os.getenv("ALLOWED_ORIGINS", "").split(",") if origin.strip()]
@@ -117,168 +119,89 @@ async def search(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# /compare_insights  – Use MedGemma to compare abnormalities
+# /compare_insights  – Visual comparison of two independent cases
 # ──────────────────────────────────────────────────────────────────────────────
 @app.post("/compare_insights")
 async def compare_insights(
     original_image: UploadFile = File(...),
     match_diagnosis: str = Form(...),
     match_asset_id: str = Form(None),
-    match_payload: str = Form(None)
+    match_payload: str = Form(None),
 ):
-    """
-    Given the original uploaded image and the diagnosis of the matched case,
-    ask MedGemma to find bounding boxes for that diagnosis in the original image.
-    This also handles the matched image if we pass it, but for simplicity
-    we'll fetch/analyze both or simulate bounding boxes if it fails.
-    """
-    
-    # Read original image
+    """Compare two images without using the historical record as model context."""
+    # These legacy form fields remain accepted for clients using the existing API.
+    _ = match_diagnosis, match_payload
     try:
         contents = await original_image.read()
-        orig_pil = Image.open(io.BytesIO(contents)).convert("RGB")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read original image: {e}")
-        
-    # Read matched image from the derived read-only dataset, never from a public URL.
-    match_pil = None
-    if match_asset_id:
-        try:
-            local_asset = asset_path(match_asset_id)
-            if not local_asset.is_file():
-                raise HTTPException(status_code=404, detail="Matched dataset image was not found")
-            match_pil = Image.open(local_asset).convert("RGB")
-        except Exception as e:
-            if isinstance(e, HTTPException):
-                raise
-            raise HTTPException(status_code=400, detail="Invalid matched dataset image") from e
+        current_image = Image.open(io.BytesIO(contents)).convert("RGB")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail="Could not read current image") from exc
 
-    # Parse match payload for context
-    parsed_payload = {}
-    if match_payload:
-        try:
-            parsed_payload = json.loads(match_payload)
-        except Exception as e:
-            print(f"Warning: failed to parse match_payload JSON: {e}")
-            
-    # Query MedGemma for bounding boxes for original
-    prompt = f"Return the bounding box coordinates [ymin, xmin, ymax, xmax] for the finding '{match_diagnosis}' in this chest X-ray."
-    
-    orig_box = None
-    match_box = None
-    
-    # Helper to parse MedGemma [y1, x1, y2, x2] response strings
-    def parse_box(text):
-        m = re.search(r'\[\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\]', text)
-        if m:
-            return [int(m.group(1)), int(m.group(2)), int(m.group(3)), int(m.group(4))]
-        return None
-        
-    # Helper to describe the box position
-    def get_region_text(box):
-        if not box: return "an unspecified region"
-        y1, x1, y2, x2 = box
-        xc = (x1 + x2) / 2
-        yc = (y1 + y2) / 2
-        
-        if yc < 333:
-            v = "upper"
-        elif yc < 666:
-            v = "mid"
-        else:
-            v = "lower"
-            
-        if xc < 333:
-            h = "left"
-        elif xc < 666:
-            h = "central"
-        else:
-            h = "right"
-            
-        return f"{v} {h} region"
-        
-    # Query for original image box
+    if not match_asset_id:
+        raise HTTPException(status_code=400, detail="A historical match image is required for visual comparison")
     try:
-        resp = query_medgemma(orig_pil, prompt=prompt, max_tokens=50)
-        if isinstance(resp, list) and len(resp) > 0:
-            box_text = resp[0].get("generated_text", "")
-            orig_box = parse_box(box_text)
-    except Exception as e:
-        print(f"MedGemma orig box extraction error: {e}")
-        
-    # Query for match image
-    if match_pil:
-        try:
-            resp = query_medgemma(match_pil, prompt=prompt, max_tokens=50)
-            if isinstance(resp, list) and len(resp) > 0:
-                box_text = resp[0].get("generated_text", "")
-                match_box = parse_box(box_text)
-        except Exception as e:
-            print(f"MedGemma match box extraction error: {e}")
-            
-    # Do not fabricate boxes. A model that cannot localize a finding reports no box.
-    if not orig_box or not match_box:
-        raise HTTPException(status_code=422, detail="The local model did not return localization boxes for this comparison.")
+        local_asset = asset_path(match_asset_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="Historical match image was not found") from exc
+    if not local_asset.is_file():
+        raise HTTPException(status_code=404, detail="Historical match image was not found")
+    try:
+        historical_image = Image.open(local_asset).convert("RGB")
+    except Exception as exc:
+        raise HTTPException(status_code=422, detail="Historical match image could not be read") from exc
 
-    orig_region = get_region_text(orig_box) if orig_box else "the affected region"
-    match_region = get_region_text(match_box) if match_box else "the affected region"
-    
-    # Build a tight prompt that forces a single, concise, non-repeating output
-    hpi = parsed_payload.get("presentation", {}).get("hpi", "")
-    outcome = parsed_payload.get("outcome", {}).get("detail", "")
-
-    unified_prompt = (
-        f"You are a radiology AI assistant. Analyze this chest X-ray for suspected '{match_diagnosis}'. "
-        f"The primary finding in the current image is in the {orig_region}. "
-        f"The historical twin case had primary involvement in the {match_region}. "
-        f"Clinical history: {hpi or 'not provided'}. Historical outcome: {outcome or 'not provided'}. "
-        f"Write exactly 5-6 sentences. Cover: (1) what the current finding looks like, "
-        f"(2) why the highlighted region is clinically significant, "
-        f"(3) how it visually compares to the historical case, "
-        f"(4) what this similarity suggests prognostically. "
-        f"Use **bold** for key medical terms. Do NOT repeat yourself. Stop after 6 sentences."
+    prompt = (
+        "These two chest radiographs are from separate patients' cases. "
+        "Image 1 is the current case; image 2 is a historical case from a different "
+        "patient. Describe the visible lung and pleural findings of each image, "
+        "then compare only their visible similarities and differences. Use exactly "
+        "three short labeled lines: Current:, Historical:, Visual comparison:. "
+        "If a feature is unclear, say so. No explanation of how one patient might "
+        "develop the other's findings. Do not mention captions, marks, chronology, "
+        "resolution, treatment, prognosis, or outcome."
     )
-
     try:
         import asyncio
-        resp = await asyncio.to_thread(query_medgemma, orig_pil, prompt=unified_prompt, max_tokens=400)
-        gen_text = "AI analysis unavailable."
-        if isinstance(resp, list) and len(resp) > 0 and resp[0].get("generated_text"):
-            raw = resp[0]["generated_text"].strip()
-            # Strip prompt echo if model returns the full prompt+completion
-            if raw.startswith(unified_prompt):
-                raw = raw[len(unified_prompt):].strip()
-            # Remove any leading "markdown" / code fence artifacts
-            raw = re.sub(r"^```(?:markdown)?\s*", "", raw, flags=re.IGNORECASE).strip()
-            raw = re.sub(r"```$", "", raw).strip()
-            # Strip LaTeX boxed notation the model sometimes wraps output in
-            # e.g.  $\boxed{The current image shows...}$  or  \boxed{...}
-            raw = re.sub(r"\$?\\?boxed\{(.+?)\}\$?", r"\1", raw, flags=re.DOTALL)
-            raw = raw.strip()
-            # Deduplicate: if the model loops, keep only the first unique occurrence
-            # Split on common sentence-repeat markers
-            seen = set()
-            sentences = re.split(r"(?<=[.!?])\s+", raw)
-            deduped = []
-            for s in sentences:
-                key = s.strip().lower()[:60]
-                if key not in seen:
-                    seen.add(key)
-                    deduped.append(s.strip())
-                # Stop after 6 sentences
-                if len(deduped) >= 6:
-                    break
-            gen_text = " ".join(deduped)
+        response = await asyncio.to_thread(
+            query_medgemma_comparison, current_image, historical_image,
+            prompt=prompt, max_tokens=220,
+        )
+    except Exception as exc:
+        logger.exception("MedGemma visual comparison failed")
+        raise HTTPException(
+            status_code=502,
+            detail="The local model could not complete the visual comparison. Please retry.",
+        ) from exc
 
-    except Exception as e:
-        print(f"MedGemma unified extraction error: {e}")
-        gen_text = "Unable to complete AI analysis at this time."
-
-    return {
-        "insights_text": gen_text,
-        "original_box": orig_box,
-        "match_box": match_box,
-    }
+    raw = (
+        response[0].get("generated_text")
+        if isinstance(response, list) and response and isinstance(response[0], dict)
+        else None
+    )
+    if not isinstance(raw, str) or not raw.strip():
+        raise HTTPException(
+            status_code=502,
+            detail="The local model returned no visual comparison. Please retry.",
+        )
+    text = raw.strip()
+    if text.startswith(prompt):
+        text = text[len(prompt):].strip()
+    text = re.sub(r"^```(?:markdown)?\s*|```$", "", text, flags=re.IGNORECASE).strip()
+    if not text:
+        raise HTTPException(
+            status_code=502,
+            detail="The local model returned no visual comparison. Please retry.",
+        )
+    if re.search(
+        r"\b(?:resolution|resolved|resolving|progression|progressed|follow[- ]up|"
+        r"prognos\w*|recover\w*|same patient|before[- ]and[- ]after|outcome)\b",
+        text, flags=re.IGNORECASE,
+    ):
+        raise HTTPException(
+            status_code=502,
+            detail="The local model returned a comparison that needs review. Please retry.",
+        )
+    return {"insights_text": text, "original_box": None, "match_box": None}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
