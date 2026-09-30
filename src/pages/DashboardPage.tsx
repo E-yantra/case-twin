@@ -4,7 +4,7 @@ import { Check, FileText, Loader2, MapPin, Settings2, Stethoscope, FolderOpen, P
 import { CaseTopBar, type Step } from "@/components/CaseTopBar";
 import { searchByImage, findHospitalsRoute } from "@/lib/mockUploadApis";
 import { API_BASE } from "@/lib/api";
-import { computeProfileConfidence } from "@/lib/caseProfileUtils";
+import { computeProfileConfidence, PROFILE_READY_THRESHOLD } from "@/lib/caseProfileUtils";
 
 import { type CaseProfile } from "@/lib/caseProfileTypes";
 import { CaseProfileView } from "@/components/CaseProfileView";
@@ -17,6 +17,7 @@ import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import ReactMarkdown from "react-markdown";
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { toast } from "sonner";
 
 const defaultIcon = new L.Icon({
   iconUrl: "https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png",
@@ -1713,6 +1714,15 @@ export function DashboardPage() {
   };
 
   const handleStepChange = async (next: Step) => {
+    const profileData = useDashboardStore.getState().profile;
+    if (
+      next === 1 &&
+      (!profileData || computeProfileConfidence(profileData).score < PROFILE_READY_THRESHOLD)
+    ) {
+      toast.error("There is no case profile ready yet.");
+      return;
+    }
+
     // When advancing to the Matches step (1), trigger real search
     if (next === 1 && matchResults.length === 0) {
       setStep(next);
@@ -1726,7 +1736,6 @@ export function DashboardPage() {
           fileToSearch = new File([dummyImg], "dummy.png", { type: "image/png" });
         }
 
-        const profileData = useDashboardStore.getState().profile;
         const results = await searchByImage(fileToSearch, profileData || undefined);
         console.log("FULL MATCHED DATA:", results);
         setMatchResults(results);

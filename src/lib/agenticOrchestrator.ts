@@ -1,6 +1,10 @@
 import type { CaseProfile } from "./caseProfileTypes";
 import { emptyProfile } from "./caseProfileTypes";
-import { extractCaseProfile, computeProfileConfidence } from "./caseProfileUtils";
+import {
+    extractCaseProfile,
+    computeProfileConfidence,
+    PROFILE_READY_THRESHOLD,
+} from "./caseProfileUtils";
 import {
     generateAgenticFollowup,
     getTargetedQuestion,
@@ -50,8 +54,6 @@ export interface OrchestratorState {
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────
-
-const READY_THRESHOLD = 60; // confidence % to show proceed CTA
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
@@ -191,7 +193,7 @@ export async function processIntakeTurn(input: ProcessTurnInput): Promise<Proces
         assistantReply,
     ].filter(Boolean) as OrchestratorMessage[];
 
-    if (conf.score >= READY_THRESHOLD) {
+    if (conf.score >= PROFILE_READY_THRESHOLD) {
         allMessages.push(assistantMsg(
             "The profile is comprehensive. You can proceed to find case matches.",
             "cta",
@@ -200,7 +202,7 @@ export async function processIntakeTurn(input: ProcessTurnInput): Promise<Proces
     }
 
     const hasExtraFields = Object.keys(mergedProfile.extra_fields ?? {}).length > 0;
-    const nextPhase = conf.score >= READY_THRESHOLD
+    const nextPhase = conf.score >= PROFILE_READY_THRESHOLD
         ? (hasExtraFields ? "expanded" : "ready")
         : "questioning";
 
@@ -210,7 +212,7 @@ export async function processIntakeTurn(input: ProcessTurnInput): Promise<Proces
             phase: nextPhase,
             messages: [...currentState.messages, ...allMessages],
             currentQuestion: followup.priority_fields[0] ?? null,
-            readyToProceed: conf.score >= READY_THRESHOLD,
+            readyToProceed: conf.score >= PROFILE_READY_THRESHOLD,
         }
     };
 }
