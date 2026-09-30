@@ -2,7 +2,7 @@ import { useCallback, useRef, useState, useMemo, useEffect, type ButtonHTMLAttri
 import { useDashboardStore } from "@/store/dashboardStore";
 import { Check, FileText, Loader2, MapPin, Settings2, Stethoscope, FolderOpen, Plus, HeartPulse, CloudOff, Scan, Microscope, Activity, ChevronLeft, Building2, X, Phone, ChevronRight } from "lucide-react";
 import { CaseTopBar, type Step } from "@/components/CaseTopBar";
-import { searchByImage, findHospitalsRoute } from "@/lib/mockUploadApis";
+import { searchByImage, findHospitalsRoute, compareInsights, type ComparisonInsights } from "@/lib/mockUploadApis";
 import { API_BASE } from "@/lib/api";
 import { computeProfileConfidence, PROFILE_READY_THRESHOLD } from "@/lib/caseProfileUtils";
 
@@ -541,11 +541,7 @@ function MatchesScreen({
   const [showInsights, setShowInsights] = useState(false);
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsError, setInsightsError] = useState<string | null>(null);
-  const [insights, setInsights] = useState<{
-    insights_text: string;
-    original_box: [number, number, number, number];
-    match_box: [number, number, number, number];
-  } | null>(null);
+  const [insights, setInsights] = useState<ComparisonInsights | null>(null);
 
   // Clear insights if the selected match has changed
   useEffect(() => {
@@ -560,8 +556,7 @@ function MatchesScreen({
   useEffect(() => {
     if (selected && originalFile && showInsights && !insights && !insightsLoading && !insightsError) {
       setInsightsLoading(true);
-      import("@/lib/mockUploadApis")
-        .then((api) => api.compareInsights(originalFile, selected))
+      compareInsights(originalFile, selected)
         .then((res) => setInsights(res))
         .catch((err) => setInsightsError(err instanceof Error ? err.message : "Analysis failed. Please try again."))
         .finally(() => setInsightsLoading(false));
@@ -576,27 +571,6 @@ function MatchesScreen({
     } else {
       setShowInsights(false);
     }
-  };
-
-  // Helper to render bounding boxes over an image
-  const renderBoxOverlay = (box: [number, number, number, number]) => {
-    // box is [ymin, xmin, ymax, xmax] max=1000
-    const [ymin, xmin, ymax, xmax] = box;
-    const top = `${(ymin / 1000) * 100}%`;
-    const left = `${(xmin / 1000) * 100}%`;
-    const height = `${((ymax - ymin) / 1000) * 100}%`;
-    const width = `${((xmax - xmin) / 1000) * 100}%`;
-
-    return (
-      <div
-        className="absolute border-2 border-[var(--mr-action)] bg-[var(--mr-action)]/20 animate-in fade-in duration-500 rounded-sm"
-        style={{ top, left, width, height }}
-      >
-        <div className="absolute -top-3 -right-3 h-6 w-6 bg-white rounded-full flex items-center justify-center shadow-sm border border-[var(--mr-action)] text-[var(--mr-action)]">
-          <Scan className="h-3 w-3" />
-        </div>
-      </div>
-    );
   };
 
   return (
@@ -710,7 +684,6 @@ function MatchesScreen({
                           alt="Your X-ray"
                           className="w-full h-full object-contain bg-black/5"
                         />
-                        {showInsights && insights && renderBoxOverlay(insights.original_box)}
                       </>
                     ) : (
                       <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -740,7 +713,6 @@ function MatchesScreen({
                           alt="Matched X-ray"
                           className="w-full h-full object-contain bg-black/5"
                         />
-                        {showInsights && insights && renderBoxOverlay(insights.match_box)}
                       </>
                     ) : (
                       <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -761,10 +733,10 @@ function MatchesScreen({
                     {insightsLoading ? <Loader2 className="h-5 w-5 animate-spin" /> : <Microscope className="h-5 w-5" />}
                   </div>
                   <div className="flex-1 mt-0.5 space-y-2 overflow-hidden">
-                    <h4 className="text-[16px] font-semibold text-zinc-900">AI Clinical Context &amp; Visual Comparison</h4>
+                    <h4 className="text-[16px] font-semibold text-zinc-900">AI Visual Comparison</h4>
                     <div className="text-[14px] leading-relaxed text-zinc-700 max-h-[500px] overflow-y-auto pr-2 custom-scrollbar">
                       {insightsLoading ? (
-                        <p className="text-zinc-500 italic">Analyzing images and cross-referencing clinical context...</p>
+                        <p className="text-zinc-500 italic">Comparing visible findings in both images...</p>
                       ) : insightsError ? (
                         <div role="alert" className="space-y-3">
                           <p className="text-red-700">{insightsError}</p>
@@ -777,12 +749,13 @@ function MatchesScreen({
                           </button>
                         </div>
                       ) : insights?.insights_text ? (
-                        <div className="prose prose-zinc prose-sm md:prose-base max-w-none 
+                        <div className="prose prose-zinc prose-sm md:prose-base max-w-none whitespace-pre-line
                             prose-p:leading-relaxed prose-p:text-zinc-700 
                             prose-headings:text-zinc-900 prose-headings:font-semibold 
                             prose-strong:text-zinc-900 prose-strong:font-semibold
                             prose-li:text-zinc-700 prose-ul:my-2 prose-li:my-1">
                           <ReactMarkdown>{insights.insights_text}</ReactMarkdown>
+                          <p className="text-xs text-zinc-500">AI-generated visual context. Check the description against both images.</p>
                         </div>
                       ) : (
                         <p className="text-zinc-400 italic text-sm">No analysis available.</p>

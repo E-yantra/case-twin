@@ -33,6 +33,7 @@ casetwin/*
 
 *.ipynb
 backend/test.py
+backend/diagnose_match_live.py
 dataset_schema.json
 dataset.json
 backend/__pycache__/

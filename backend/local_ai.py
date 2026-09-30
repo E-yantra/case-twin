@@ -21,6 +21,7 @@ if GATEWAY_BASE_URL and not GATEWAY_BASE_URL.endswith("/v1"):
     GATEWAY_BASE_URL = f"{GATEWAY_BASE_URL}/v1"
 GATEWAY_API_KEY = os.getenv("LOCAL_GATEWAY_API_KEY", os.getenv("LOCAL_LLM_API_KEY", "")).strip()
 MEDGEMMA_MODEL = os.getenv("MEDGEMMA_MODEL", os.getenv("LOCAL_MODEL_NAME", "medgemma")).strip()
+MEDGEMMA_COMPARISON_MODEL = os.getenv("MEDGEMMA_COMPARISON_MODEL", "medgemma-1.5").strip() or "medgemma-1.5"
 GEMMA_MODEL = os.getenv("GEMMA_MODEL", os.getenv("LOCAL_GENERAL_MODEL_NAME", "gemma-4")).strip()
 MEDSIGLIP_BASE_URL = os.getenv("MEDSIGLIP_BASE_URL", os.getenv("MEDSIGLIP_ENDPOINT", "")).rstrip("/")
 MEDSIGLIP_API_KEY = os.getenv("MEDSIGLIP_API_KEY", "").strip()
@@ -51,12 +52,15 @@ def _gateway_headers() -> dict[str, str]:
 
 def query_local_model(
     prompt: str, *, model: str = MEDGEMMA_MODEL, image: Image.Image | None = None,
-    max_tokens: int = 300, stop_sequences: list[str] | None = None,
+    images: list[Image.Image] | None = None, max_tokens: int = 300,
+    stop_sequences: list[str] | None = None, temperature: float | None = None,
 ) -> list[dict[str, str]]:
     """Call the OpenAI-compatible chat API and preserve the legacy response shape."""
+    if image is not None and images is not None:
+        raise ValueError("Pass either image or images, not both")
     content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
-    if image is not None:
-        content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_image_b64(image)}"}})
+    for item in images if images is not None else ([image] if image is not None else []):
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_image_b64(item)}"}})
     payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": content}],
@@ -64,6 +68,8 @@ def query_local_model(
     }
     if stop_sequences:
         payload["stop"] = stop_sequences
+    if temperature is not None:
+        payload["temperature"] = temperature
     response = httpx.post(f"{GATEWAY_BASE_URL}/chat/completions", headers=_gateway_headers(), json=payload, timeout=120.0)
     response.raise_for_status()
     try:
@@ -83,6 +89,14 @@ def query_local_model(
 def query_medgemma(image: Image.Image, prompt: str = "Describe this chest X-ray.", max_tokens: int = 200,
                    stop_sequences: list[str] | None = None) -> list[dict[str, str]]:
     return query_local_model(prompt, model=MEDGEMMA_MODEL, image=image, max_tokens=max_tokens, stop_sequences=stop_sequences)
+
+
+def query_medgemma_comparison(current_image: Image.Image, historical_image: Image.Image,
+                              prompt: str, max_tokens: int = 400) -> list[dict[str, str]]:
+    return query_local_model(
+        prompt, model=MEDGEMMA_COMPARISON_MODEL,
+        images=[current_image, historical_image], max_tokens=max_tokens, temperature=0,
+    )
 
 
 def generate_embedding(image: Image.Image) -> list[float]:
