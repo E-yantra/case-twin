@@ -47,7 +47,10 @@ class CompareInsightsTests(unittest.IsolatedAsyncioTestCase):
             matched_image.write_bytes(self._image_bytes("black"))
             with patch.object(main, "asset_path", return_value=matched_image), patch.object(
                 main, "query_medgemma_comparison",
-                return_value=[{"generated_text": "The current image is clear. The historical image has a visible pleural line."}],
+                side_effect=[
+                    [{"generated_text": "The current image is clear. The historical image has a visible pleural line."}],
+                    [{"generated_text": '{"current_finding": null, "historical_finding": null}'}],
+                ],
             ) as model:
                 response = await self._compare(current)
 
@@ -57,14 +60,55 @@ class CompareInsightsTests(unittest.IsolatedAsyncioTestCase):
             "original_box": None,
             "match_box": None,
         })
-        model.assert_called_once()
-        args, kwargs = model.call_args
+        self.assertEqual(model.call_count, 2)
+        args, kwargs = model.call_args_list[0]
         self.assertEqual(args[0].getpixel((0, 0)), (255, 255, 255))
         self.assertEqual(args[1].getpixel((0, 0)), (0, 0, 0))
         self.assertIn("separate patients' cases", kwargs["prompt"])
         self.assertNotIn("Historical cough", kwargs["prompt"])
         self.assertNotIn("Recovered", kwargs["prompt"])
         self.assertNotIn("pneumothorax", kwargs["prompt"])
+
+    async def test_localizes_only_the_visible_historical_finding(self):
+        current = self._image_bytes("white")
+        with tempfile.TemporaryDirectory() as directory:
+            matched_image = Path(directory) / "matched.png"
+            matched_image.write_bytes(self._image_bytes("black"))
+            with patch.object(main, "asset_path", return_value=matched_image), patch.object(
+                main, "query_medgemma_comparison", side_effect=[
+                    [{"generated_text": "Current: clear. Historical: left pneumothorax. Visual comparison: different pleural markings."}],
+                    [{"generated_text": '{"current_finding": null, "historical_finding": "left pneumothorax"}'}],
+                ]
+            ), patch.object(
+                main, "query_medgemma_localization",
+                return_value=[{"generated_text": 'thought... Final Answer: ```json[{"box_2d":[110,450,770,870],"label":"left pneumothorax"}]```'}],
+            ) as localize:
+                response = await self._compare(current)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["original_box"], None)
+        self.assertEqual(response.json()["match_box"], [110, 450, 770, 870])
+        localize.assert_called_once()
+        self.assertEqual(localize.call_args.args[0].getpixel((0, 0)), (0, 0, 0))
+
+    async def test_malformed_localization_does_not_invent_an_overlay(self):
+        current = self._image_bytes("white")
+        with tempfile.TemporaryDirectory() as directory:
+            matched_image = Path(directory) / "matched.png"
+            matched_image.write_bytes(self._image_bytes("black"))
+            with patch.object(main, "asset_path", return_value=matched_image), patch.object(
+                main, "query_medgemma_comparison", side_effect=[
+                    [{"generated_text": "Current: clear. Historical: left pneumothorax. Visual comparison: different pleural markings."}],
+                    [{"generated_text": '{"current_finding": null, "historical_finding": "left pneumothorax"}'}],
+                ]
+            ), patch.object(
+                main, "query_medgemma_localization",
+                return_value=[{"generated_text": 'Final Answer: [{"box_2d":[900,450,770,870],"label":"left pneumothorax"}]'}],
+            ):
+                response = await self._compare(current)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["match_box"])
 
     async def test_missing_historical_image_returns_clear_error_without_model_call(self):
         current = self._image_bytes("white")
@@ -140,6 +184,17 @@ class GatewayComparisonTests(unittest.TestCase):
                   for part in content[1:]]
         self.assertEqual(images[0].getpixel((0, 0)), (255, 255, 255))
         self.assertEqual(images[1].getpixel((0, 0)), (0, 0, 0))
+
+    def test_localization_sends_image_before_prompt(self):
+        gateway_response = Mock()
+        gateway_response.json.return_value = {"choices": [{"message": {"content": "Final Answer: []"}}]}
+        with patch.object(local_ai, "GATEWAY_BASE_URL", "http://gateway.test/v1"), patch.object(
+            local_ai, "_gateway_headers", return_value={"Authorization": "Bearer test"}
+        ), patch.object(local_ai.httpx, "post", return_value=gateway_response) as post:
+            local_ai.query_medgemma_localization(Image.new("RGB", (8, 8), "black"), "Locate finding")
+
+        content = post.call_args.kwargs["json"]["messages"][0]["content"]
+        self.assertEqual([item["type"] for item in content], ["image_url", "text"])
 
 
 if __name__ == "__main__":

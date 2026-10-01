@@ -22,7 +22,10 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
-from embedding_service import generate_embedding, query_medgemma, query_medgemma_comparison
+from embedding_service import (
+    generate_embedding, query_medgemma,
+    query_medgemma_comparison, query_medgemma_localization,
+)
 from qdrant_service import search_similar
 from manifest import asset_path
 from document_text import DocumentExtractionError, extract_document_text
@@ -121,6 +124,71 @@ async def search(
 # ──────────────────────────────────────────────────────────────────────────────
 # /compare_insights  – Visual comparison of two independent cases
 # ──────────────────────────────────────────────────────────────────────────────
+def _model_json(reply: str):
+    """Read only the final JSON answer; localization can include reasoning first."""
+    if not isinstance(reply, str):
+        return None
+    final = reply.rsplit("Final Answer:", 1)[-1].strip()
+    fenced = re.search(r"```(?:json)?\s*(.*?)\s*```", final, flags=re.IGNORECASE | re.DOTALL)
+    if fenced:
+        final = fenced.group(1)
+    try:
+        return json.loads(final)
+    except (TypeError, ValueError):
+        return None
+
+
+def _localization_box(reply: str, finding: str) -> list[int] | None:
+    result = _model_json(reply)
+    if not isinstance(result, list) or len(result) != 1 or not isinstance(result[0], dict):
+        return None
+    label = result[0].get("label")
+    finding_terms = set(re.findall(r"[a-z]{5,}", finding.lower())) - {"large", "small", "sided", "lower", "upper"}
+    label_terms = set(re.findall(r"[a-z]{5,}", label.lower())) if isinstance(label, str) else set()
+    if finding_terms and not finding_terms.intersection(label_terms):
+        return None
+    box = result[0].get("box_2d")
+    if not isinstance(box, list) or len(box) != 4:
+        return None
+    if any(isinstance(value, bool) or not isinstance(value, (int, float)) for value in box):
+        return None
+    y0, x0, y1, x1 = box
+    if not (0 <= y0 < y1 <= 1000 and 0 <= x0 < x1 <= 1000):
+        return None
+    if (y1 - y0) < 25 or (x1 - x0) < 25:
+        return None
+    return [round(value) for value in box]
+
+
+def _finding_name(value) -> str | None:
+    if not isinstance(value, str):
+        return None
+    finding = " ".join(value.split())
+    if not (1 <= len(finding) <= 100) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9 ,.'()/-]*", finding):
+        return None
+    if finding.lower() in {"normal", "none", "no finding", "no abnormality"}:
+        return None
+    return finding
+
+
+def _localization_prompt(finding: str) -> str:
+    return (
+        "Instructions:\nThe following user query will require outputting bounding "
+        "boxes. The format of bounding box coordinates is [y0, x0, y1, x1] "
+        "where (y0, x0) is the top-left corner and (y1, x1) is the bottom-right "
+        "corner. This implies x0 < x1 and y0 < y1. Normalize x and y to [0, "
+        "1000], so 15% of the image width has x=150.\n"
+        "You MUST output one parseable JSON list of objects enclosed in "
+        '```json...``` brackets, for example '
+        '```json[{"box_2d":[140,110,340,470],"label":"right clavicle"}]``` '
+        "is valid.\nRemember left refers to the patient's left side, near the "
+        "heart and on the right side of a frontal radiograph.\n"
+        f"Query:\nWhere is the {finding}? Don't give a final answer without "
+        'reasoning. Output the final answer in the format "Final Answer: X" '
+        'where X is a JSON list of objects with "box_2d" and "label" keys. Answer:'
+    )
+
+
 @app.post("/compare_insights")
 async def compare_insights(
     original_image: UploadFile = File(...),
@@ -201,7 +269,44 @@ async def compare_insights(
             status_code=502,
             detail="The local model returned a comparison that needs review. Please retry.",
         )
-    return {"insights_text": text, "original_box": None, "match_box": None}
+    # A separate two-image check gates localization. Single-image localization
+    # produced a box on the clear sample image, so its box alone is insufficient.
+    finding_prompt = (
+        "These chest X-rays are from two unrelated patients. Image 1 is current "
+        "and image 2 is historical. Identify only an abnormal lung or pleural "
+        "finding that is directly visible and can be localized in each image. "
+        "Ignore captions and colored marks. If an image has no clearly visible "
+        "abnormality, use null. Return only JSON: "
+        '{"current_finding": string or null, "historical_finding": string or null}. '
+        "Do not infer a past disease from a normal image."
+    )
+    boxes = {"original_box": None, "match_box": None}
+    try:
+        finding_response = await asyncio.to_thread(
+            query_medgemma_comparison, current_image, historical_image,
+            prompt=finding_prompt, max_tokens=160,
+        )
+        findings = _model_json(finding_response[0]["generated_text"])
+    except Exception:
+        logger.exception("MedGemma finding check was unavailable")
+        findings = None
+    if isinstance(findings, dict):
+        for field, image, finding_key in (
+            ("original_box", current_image, "current_finding"),
+            ("match_box", historical_image, "historical_finding"),
+        ):
+            finding = _finding_name(findings.get(finding_key))
+            if finding:
+                try:
+                    localized = await asyncio.to_thread(
+                        query_medgemma_localization, image,
+                        prompt=_localization_prompt(finding),
+                    )
+                    boxes[field] = _localization_box(localized[0]["generated_text"], finding)
+                except Exception:
+                    logger.exception("MedGemma localization was unavailable")
+
+    return {"insights_text": text, **boxes}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
