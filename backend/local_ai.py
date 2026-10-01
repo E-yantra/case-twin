@@ -54,13 +54,16 @@ def query_local_model(
     prompt: str, *, model: str = MEDGEMMA_MODEL, image: Image.Image | None = None,
     images: list[Image.Image] | None = None, max_tokens: int = 300,
     stop_sequences: list[str] | None = None, temperature: float | None = None,
+    image_first: bool = False,
 ) -> list[dict[str, str]]:
     """Call the OpenAI-compatible chat API and preserve the legacy response shape."""
     if image is not None and images is not None:
         raise ValueError("Pass either image or images, not both")
-    content: list[dict[str, Any]] = [{"type": "text", "text": prompt}]
+    content: list[dict[str, Any]] = [] if image_first else [{"type": "text", "text": prompt}]
     for item in images if images is not None else ([image] if image is not None else []):
         content.append({"type": "image_url", "image_url": {"url": f"data:image/png;base64,{_image_b64(item)}"}})
+    if image_first:
+        content.append({"type": "text", "text": prompt})
     payload: dict[str, Any] = {
         "model": model,
         "messages": [{"role": "user", "content": content}],
@@ -96,6 +99,13 @@ def query_medgemma_comparison(current_image: Image.Image, historical_image: Imag
     return query_local_model(
         prompt, model=MEDGEMMA_COMPARISON_MODEL,
         images=[current_image, historical_image], max_tokens=max_tokens, temperature=0,
+    )
+
+
+def query_medgemma_localization(image: Image.Image, prompt: str) -> list[dict[str, str]]:
+    return query_local_model(
+        prompt, model=MEDGEMMA_COMPARISON_MODEL, image=image,
+        image_first=True, max_tokens=900, temperature=0,
     )
 
 

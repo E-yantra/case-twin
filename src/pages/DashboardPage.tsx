@@ -542,6 +542,34 @@ function MatchesScreen({
   const [insightsLoading, setInsightsLoading] = useState(false);
   const [insightsError, setInsightsError] = useState<string | null>(null);
   const [insights, setInsights] = useState<ComparisonInsights | null>(null);
+  const [currentImageSize, setCurrentImageSize] = useState<{ src: string; width: number; height: number } | null>(null);
+  const [historicalImageSize, setHistoricalImageSize] = useState<{ src: string; width: number; height: number } | null>(null);
+
+  const renderSuggestedBox = (box: [number, number, number, number] | null, size: { width: number; height: number } | null) => {
+    if (!box || !size) return null;
+    const [y0, x0, y1, x1] = box;
+    return (
+      <svg
+        data-testid="suggested-finding-box"
+        role="img"
+        aria-label="AI-suggested finding region"
+        className="pointer-events-none absolute inset-0 h-full w-full"
+        viewBox={`0 0 ${size.width} ${size.height}`}
+        preserveAspectRatio="xMidYMid meet"
+      >
+        <rect
+          x={x0 * size.width / 1000}
+          y={y0 * size.height / 1000}
+          width={(x1 - x0) * size.width / 1000}
+          height={(y1 - y0) * size.height / 1000}
+          fill="rgba(37, 99, 235, 0.16)"
+          stroke="#2563eb"
+          strokeWidth="2"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+    );
+  };
 
   // Clear insights if the selected match has changed
   useEffect(() => {
@@ -683,7 +711,16 @@ function MatchesScreen({
                           src={originalPreviewUrl}
                           alt="Your X-ray"
                           className="w-full h-full object-contain bg-black/5"
+                          onLoad={(event) => setCurrentImageSize({
+                            src: originalPreviewUrl,
+                            width: event.currentTarget.naturalWidth,
+                            height: event.currentTarget.naturalHeight,
+                          })}
                         />
+                        {showInsights && insights && renderSuggestedBox(
+                          insights.original_box,
+                          currentImageSize?.src === originalPreviewUrl ? currentImageSize : null,
+                        )}
                       </>
                     ) : (
                       <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -712,7 +749,16 @@ function MatchesScreen({
                           src={selected.image_url}
                           alt="Matched X-ray"
                           className="w-full h-full object-contain bg-black/5"
+                          onLoad={(event) => setHistoricalImageSize({
+                            src: selected.image_url,
+                            width: event.currentTarget.naturalWidth,
+                            height: event.currentTarget.naturalHeight,
+                          })}
                         />
+                        {showInsights && insights && renderSuggestedBox(
+                          insights.match_box,
+                          historicalImageSize?.src === selected.image_url ? historicalImageSize : null,
+                        )}
                       </>
                     ) : (
                       <div className="absolute inset-0 flex flex-col items-center justify-center">
@@ -755,7 +801,7 @@ function MatchesScreen({
                             prose-strong:text-zinc-900 prose-strong:font-semibold
                             prose-li:text-zinc-700 prose-ul:my-2 prose-li:my-1">
                           <ReactMarkdown>{insights.insights_text}</ReactMarkdown>
-                          <p className="text-xs text-zinc-500">AI-generated visual context. Check the description against both images.</p>
+                          <p className="text-xs text-zinc-500">AI-generated visual context. Boxes show suggested regions; check the text and boxes against both images.</p>
                         </div>
                       ) : (
                         <p className="text-zinc-400 italic text-sm">No analysis available.</p>
