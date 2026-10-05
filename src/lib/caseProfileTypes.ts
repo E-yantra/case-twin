@@ -1,5 +1,5 @@
 // Full CaseTwin case profile schema
-// Mirrors the JSON schema used by MedGemma extraction
+// Mirrors backend/manifest.py and the Gemma 4 extraction schema in backend/extraction.py
 
 export interface CaseProfile {
     profile_id: string;
@@ -11,6 +11,7 @@ export interface CaseProfile {
     study: StudyInfo;
     assessment: AssessmentInfo;
     findings: FindingsInfo;
+    management: ManagementInfo;
     summary: SummaryInfo;
     outcome: OutcomeInfo;
     provenance: ProvenanceInfo;
@@ -42,6 +43,8 @@ export interface PresentationInfo {
 }
 
 export interface StudyInfo {
+    /** Twin-library collection (cxr, chest_ct, derm, fundus, histopath), set by MedSigLIP routing. */
+    collection?: string | null;
     modality: string | null;
     body_region: string | null;
     view_position: string | null;
@@ -92,21 +95,32 @@ export interface DevicesFindings {
 }
 
 export interface FindingsInfo {
+    /** Short phrases of what imaging showed, any modality. */
+    imaging_findings: string[];
+    lab_findings: string[];
     lungs: LungsFindings;
     pleura: PleuraFindings;
     cardiomediastinal: CardiomediastinalFindings;
     devices: DevicesFindings;
 }
 
+export interface ManagementInfo {
+    treatments: string[];
+    procedures: string[];
+}
+
 export interface SummaryInfo {
     one_liner: string | null;
     key_points: string[];
     red_flags: string[];
+    /** The final diagnosis or teaching point a published case reaches. */
+    conclusion: string | null;
 }
 
 export interface OutcomeInfo {
     success: string | null;
     detail: string | null;
+    follow_up: string | null;
 }
 
 export interface ProvenanceInfo {
@@ -150,6 +164,7 @@ export function emptyProfile(): CaseProfile {
             pmh: null,
         },
         study: {
+            collection: null,
             modality: null,
             body_region: null,
             view_position: null,
@@ -169,6 +184,8 @@ export function emptyProfile(): CaseProfile {
             icu_candidate: null,
         },
         findings: {
+            imaging_findings: [],
+            lab_findings: [],
             lungs: {
                 consolidation_present: null,
                 consolidation_locations: [],
@@ -194,14 +211,20 @@ export function emptyProfile(): CaseProfile {
                 device_list: [],
             },
         },
+        management: {
+            treatments: [],
+            procedures: [],
+        },
         summary: {
             one_liner: null,
             key_points: [],
             red_flags: [],
+            conclusion: null,
         },
         outcome: {
             success: null,
             detail: null,
+            follow_up: null,
         },
         provenance: {
             dataset_name: null,

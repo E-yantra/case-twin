@@ -305,10 +305,33 @@ function FindingsSection({ findings }: { findings: FindingsInfo }) {
 
     const hasDevices = !isEmpty(devices.lines_tubes_present) || !isEmpty(devices.device_list);
 
-    if (!hasLungs && !hasPleura && !hasCardio && !hasDevices) return null;
+    const imaging = findings.imaging_findings ?? [];
+    const labs = findings.lab_findings ?? [];
+
+    if (!hasLungs && !hasPleura && !hasCardio && !hasDevices && imaging.length === 0 && labs.length === 0) return null;
 
     return (
         <SectionCard icon={<Wind className="h-4 w-4" />} title="Findings" accent="slate">
+            {(imaging.length > 0 || labs.length > 0) && (
+                <div className="mb-4 space-y-3">
+                    {imaging.length > 0 && (
+                        <div>
+                            <p className="text-[13px] font-medium text-zinc-500 mb-1.5">Imaging</p>
+                            <ul className="space-y-1">
+                                {imaging.map((f) => <li key={f} className="text-[14px] text-zinc-800">• {f}</li>)}
+                            </ul>
+                        </div>
+                    )}
+                    {labs.length > 0 && (
+                        <div>
+                            <p className="text-[13px] font-medium text-zinc-500 mb-1.5">Labs / pathology</p>
+                            <ul className="space-y-1">
+                                {labs.map((f) => <li key={f} className="text-[14px] text-zinc-800">• {f}</li>)}
+                            </ul>
+                        </div>
+                    )}
+                </div>
+            )}
             <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
                 {hasLungs && (
                     <div className="rounded-xl border border-zinc-200/80 bg-zinc-50/50 p-4 shadow-sm">

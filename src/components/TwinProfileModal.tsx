@@ -1,5 +1,5 @@
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { type MatchItem } from "@/lib/mockUploadApis";
+import { type MatchItem } from "@/lib/twinApi";
 import { Clock, FileText, User, Microscope, Activity, Link as LinkIcon, Calendar, Image as ImageIcon, Pill, AlertTriangle } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { SelectionExplainPopover } from "@/components/SelectionExplainPopover";
@@ -38,7 +38,7 @@ export function TwinProfileModal({ isOpen, onClose, match }: TwinProfileModalPro
                                 <div className="flex flex-wrap items-center gap-2 text-sm text-zinc-500">
                                     <Badge variant="secondary" className="bg-zinc-50 border border-zinc-200 shadow-sm text-zinc-700">Similarity: {match.score}%</Badge>
                                     {match.pmc_id && (
-                                        <a href={p.provenance?.source_url || `https://www.ncbi.nlm.nih.gov/pmc/articles/${match.pmc_id}/`} target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:text-blue-600 transition-colors">
+                                        <a href={p.provenance?.source_url || `https://pmc.ncbi.nlm.nih.gov/articles/${match.pmc_id}/`} target="_blank" rel="noreferrer" className="flex items-center gap-1 hover:text-blue-600 transition-colors">
                                             <LinkIcon className="h-3.5 w-3.5" />
                                             {match.pmc_id}
                                         </a>
@@ -53,7 +53,7 @@ export function TwinProfileModal({ isOpen, onClose, match }: TwinProfileModalPro
                                 match.outcomeVariant === "warning" ? "bg-amber-100 text-amber-800 border-amber-200 hover:bg-amber-200 px-3 py-1" :
                                     "bg-zinc-100 text-zinc-800 border-zinc-200 hover:bg-zinc-200 px-3 py-1"
                         }>
-                            {match.outcome}
+                            {match.outcomeVariant === "success" ? "Favourable outcome" : match.outcomeVariant === "warning" ? "Poor outcome" : "Outcome reported"}
                         </Badge>
                     </div>
 
@@ -147,6 +147,29 @@ export function TwinProfileModal({ isOpen, onClose, match }: TwinProfileModalPro
                                             </h3>
                                             <div className="text-[14px] leading-relaxed text-zinc-700 bg-zinc-100/50 p-4 rounded-xl border border-zinc-200/60 shadow-inner">
                                                 {p.outcome.detail}
+                                                {p.outcome.follow_up && <p className="mt-2 text-zinc-500">Follow-up: {p.outcome.follow_up}</p>}
+                                            </div>
+                                        </section>
+                                    )}
+
+                                    {(p.management?.treatments?.length > 0 || p.management?.procedures?.length > 0) && (
+                                        <section className="space-y-3">
+                                            <h3 className="text-[15px] font-semibold text-zinc-900 uppercase tracking-wide">
+                                                Management
+                                            </h3>
+                                            <ul className="list-disc pl-5 space-y-1 text-[14px] text-zinc-700">
+                                                {[...(p.management.treatments ?? []), ...(p.management.procedures ?? [])].map((t: string, idx: number) => <li key={idx}>{t}</li>)}
+                                            </ul>
+                                        </section>
+                                    )}
+
+                                    {p.summary?.conclusion && (
+                                        <section className="space-y-3">
+                                            <h3 className="text-[15px] font-semibold text-zinc-900 uppercase tracking-wide">
+                                                Authors' Conclusion
+                                            </h3>
+                                            <div className="text-[14px] leading-relaxed text-zinc-800 bg-blue-50/60 p-4 rounded-xl border border-blue-100">
+                                                {p.summary.conclusion}
                                             </div>
                                         </section>
                                     )}
@@ -328,6 +351,8 @@ export function TwinProfileModal({ isOpen, onClose, match }: TwinProfileModalPro
                                             Structured Findings
                                         </h4>
                                         <div className="space-y-2 text-sm text-zinc-700 mb-4">
+                                            {(findings?.imaging_findings ?? []).map((f: string, idx: number) => <div key={`img-${idx}`} className="flex gap-2"><span className="shrink-0 text-blue-600">•</span> {f}</div>)}
+                                            {(findings?.lab_findings ?? []).map((f: string, idx: number) => <div key={`lab-${idx}`} className="flex gap-2"><span className="shrink-0 text-violet-600">•</span> {f}</div>)}
                                             {findings?.lungs?.consolidation_present === "yes" && <div className="flex gap-2"><span className="shrink-0 text-amber-600">•</span> Lung Consolidation</div>}
                                             {findings?.lungs?.edema_present === "yes" && <div className="flex gap-2"><span className="shrink-0 text-amber-600">•</span> Pulmonary Edema</div>}
                                             {findings?.lungs?.atelectasis_present === "yes" && <div className="flex gap-2"><span className="shrink-0 text-amber-600">•</span> Atelectasis</div>}

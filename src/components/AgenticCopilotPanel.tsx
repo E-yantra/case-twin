@@ -247,6 +247,7 @@ export function AgenticCopilotPanel({
 }: AgenticCopilotPanelProps) {
     const state = useDashboardStore(s => s.orchestratorState);
     const setState = useDashboardStore(s => s.setOrchestratorState);
+    const addTrace = useDashboardStore(s => s.addTrace);
     const stateRef = useRef<OrchestratorState>(state);
 
     const [inputText, setInputText] = useState("");
@@ -305,9 +306,6 @@ export function AgenticCopilotPanel({
         addFiles(e.dataTransfer.files);
     };
 
-    // Tiny local sleep helper
-    const sleep = (ms: number) => new Promise<void>(r => setTimeout(r, ms));
-
     // ── Send ──────────────────────────────────────────────────────────────
 
     const handleSend = async () => {
@@ -321,7 +319,7 @@ export function AgenticCopilotPanel({
         setPendingFiles([]);
         setIsProcessing(true);
 
-        // Capture clean pre-turn state BEFORE appending any thinking bubbles.
+        // Capture clean pre-turn state BEFORE appending the thinking bubble.
         // This is what we'll pass to the orchestrator so its result is built
         // off clean messages — no thinking bubbles in the lineage.
         const cleanSnapshot = stateRef.current;
@@ -340,42 +338,20 @@ export function AgenticCopilotPanel({
             })),
         };
 
-        const stage1Label = filesToSend.length > 0
-            ? `Parsing ${filesToSend.length} file${filesToSend.length > 1 ? "s" : ""}…`
-            : "Parsing clinical note…";
-
-        // Stage 1 — show user msg + first thinking bubble
+        // One honest status line naming the real pipeline that is now running.
+        const hasImage = filesToSend.some(f => f.type.startsWith("image/"));
+        const pipelineLabel = hasImage
+            ? "MedSigLIP is classifying the image, MedGemma is reading it, then Gemma 4 builds the case report…"
+            : "Gemma 4 is structuring the notes into a case report…";
         setState(prev => ({
             ...prev,
             phase: "extracting",
             messages: [
                 ...prev.messages,
                 previewUserMsg,
-                { id: `t1-${Date.now()}`, role: "assistant", type: "thinking", content: stage1Label } as OrchestratorMessage,
+                { id: `t1-${Date.now()}`, role: "assistant", type: "thinking", content: pipelineLabel } as OrchestratorMessage,
             ],
         }));
-        await sleep(500);
-
-        // Stage 2
-        setState(prev => ({
-            ...prev,
-            messages: [
-                ...prev.messages,
-                { id: `t2-${Date.now()}`, role: "assistant", type: "thinking", content: "Extracting structured fields…" } as OrchestratorMessage,
-            ],
-        }));
-        await sleep(500);
-
-        // Stage 3
-        setState(prev => ({
-            ...prev,
-            messages: [
-                ...prev.messages,
-                { id: `t3-${Date.now()}`, role: "assistant", type: "thinking", content: "Updating profile…" } as OrchestratorMessage,
-            ],
-        }));
-        await sleep(200);
-
 
         try {
             // Pass the CLEAN snapshot (no thinking bubbles) to the orchestrator.
@@ -388,6 +364,7 @@ export function AgenticCopilotPanel({
 
             // Replace everything (including thinking bubbles) with the real outcome.
             setState(result.newState);
+            if (result.trace.length > 0) addTrace("Case report", result.trace);
 
         } catch {
             setState(prev => ({
