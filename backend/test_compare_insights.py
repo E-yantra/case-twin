@@ -22,7 +22,8 @@ class CompareInsightsTests(unittest.IsolatedAsyncioTestCase):
         Image.new("RGB", (8, 8), color).save(output, format="PNG")
         return output.getvalue()
 
-    async def _compare(self, image_bytes: bytes, *, asset_id: str | None = "matched.png") -> httpx.Response:
+    async def _compare(self, image_bytes: bytes, *, asset_id: str | None = "matched.png",
+                       caption: str | None = None) -> httpx.Response:
         data = {
             "match_diagnosis": "pneumothorax",
             "match_payload": json.dumps({
@@ -32,6 +33,8 @@ class CompareInsightsTests(unittest.IsolatedAsyncioTestCase):
         }
         if asset_id is not None:
             data["match_asset_id"] = asset_id
+        if caption is not None:
+            data["match_caption"] = caption
         transport = httpx.ASGITransport(app=main.app)
         async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
             return await client.post(
@@ -90,6 +93,65 @@ class CompareInsightsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.json()["match_box"], [110, 450, 770, 870])
         localize.assert_called_once()
         self.assertEqual(localize.call_args.args[0].getpixel((0, 0)), (0, 0, 0))
+
+    async def test_screenshot_pair_does_not_show_false_normal_read_or_effusion_boxes(self):
+        current = self._image_bytes("white")
+        caption = (
+            'Chest X-ray shows a continuous diaphragm sign caused by mediastinal gas '
+            'and Naclerio\'s V sign (red arrowheads).'
+        )
+        text = (
+            'Current: The lungs are clear. There is no pleural effusion or pneumothorax.\n'
+            'Historical: The lungs are clear and the mediastinum is unremarkable. '
+            'There is no pleural effusion or pneumothorax.\n'
+            'Visual comparison: Both images appear normal.'
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            matched_image = Path(directory) / "matched.png"
+            matched_image.write_bytes(self._image_bytes("black"))
+            with patch.object(main, "asset_path", return_value=matched_image), patch.object(
+                main, "query_medgemma_comparison", return_value=[{"generated_text": text}]
+            ) as model, patch.object(main, "query_medgemma_localization") as localize:
+                response = await self._compare(current, caption=caption)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("reported mediastinal gas", response.json()["insights_text"])
+        self.assertIn("inconclusive", response.json()["insights_text"])
+        self.assertNotIn("unremarkable", response.json()["insights_text"])
+        self.assertIsNone(response.json()["original_box"])
+        self.assertIsNone(response.json()["match_box"])
+        model.assert_called_once()
+        localize.assert_not_called()
+
+    async def test_classifier_cannot_box_finding_denied_by_narrative(self):
+        current = self._image_bytes("white")
+        with tempfile.TemporaryDirectory() as directory:
+            matched_image = Path(directory) / "matched.png"
+            matched_image.write_bytes(self._image_bytes("black"))
+            with patch.object(main, "asset_path", return_value=matched_image), patch.object(
+                main, "query_medgemma_comparison", side_effect=[
+                    [{"generated_text": (
+                        "Current: No pleural effusion or pneumothorax.\n"
+                        "Historical: No pleural effusion or pneumothorax.\n"
+                        "Visual comparison: Neither image shows pleural effusion."
+                    )}],
+                    [{"generated_text": '{"current_finding":"Pleural effusion","historical_finding":"Pleural effusion"}'}],
+                ]
+            ) as model, patch.object(main, "query_medgemma_localization") as localize:
+                response = await self._compare(current)
+
+        self.assertEqual(response.status_code, 200)
+        self.assertIsNone(response.json()["original_box"])
+        self.assertIsNone(response.json()["match_box"])
+        self.assertEqual(model.call_count, 2)
+        localize.assert_not_called()
+
+    def test_resolved_caption_is_not_treated_as_visible_pneumothorax(self):
+        self.assertIsNone(main._reported_finding("Chest X-ray revealed complete resolution of pneumothorax."))
+
+    def test_localizer_label_must_match_the_finding_not_just_anatomy(self):
+        reply = 'Final Answer: [{"box_2d":[100,200,500,600],"label":"pleural thickening"}]'
+        self.assertIsNone(main._localization_box(reply, "pleural effusion"))
 
     async def test_malformed_localization_does_not_invent_an_overlay(self):
         current = self._image_bytes("white")

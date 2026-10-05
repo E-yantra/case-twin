@@ -123,6 +123,10 @@ export async function compareInsights(originalImage: File, matchItem: MatchItem)
   const formData = new FormData();
   formData.append("original_image", originalImage);
   formData.append("match_diagnosis", matchItem.diagnosis);
+  const caption = matchItem.raw_payload?.study?.caption;
+  if (typeof caption === "string" && caption.trim()) {
+    formData.append("match_caption", caption);
+  }
   if (matchItem.asset_id) {
     formData.append("match_asset_id", matchItem.asset_id);
   }

@@ -143,9 +143,12 @@ def _localization_box(reply: str, finding: str) -> list[int] | None:
     if not isinstance(result, list) or len(result) != 1 or not isinstance(result[0], dict):
         return None
     label = result[0].get("label")
-    finding_terms = set(re.findall(r"[a-z]{5,}", finding.lower())) - {"large", "small", "sided", "lower", "upper"}
+    finding_terms = set(re.findall(r"[a-z]{5,}", finding.lower())) - {
+        "large", "small", "sided", "lower", "upper", "right", "left",
+        "acute", "chronic", "pleural", "pulmonary", "mediastinal", "lung",
+    }
     label_terms = set(re.findall(r"[a-z]{5,}", label.lower())) if isinstance(label, str) else set()
-    if finding_terms and not finding_terms.intersection(label_terms):
+    if not finding_terms or not finding_terms.intersection(label_terms):
         return None
     box = result[0].get("box_2d")
     if not isinstance(box, list) or len(box) != 4:
@@ -169,6 +172,60 @@ def _finding_name(value) -> str | None:
     if finding.lower() in {"normal", "none", "no finding", "no abnormality"}:
         return None
     return finding
+
+
+def _historical_line(text: str) -> str:
+    match = re.search(r"Historical:\s*(.*?)(?=Visual comparison:|\Z)", text, re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else ""
+
+
+def _reported_finding(caption: str) -> tuple[str, str] | None:
+    """Recognize a few explicit figure-caption findings, not the case outcome."""
+    if not caption:
+        return None
+    for label, pattern in (
+        ("mediastinal gas", r"mediastinal gas|pneumomediastinum|continuous diaphragm sign|Naclerio.s V sign"),
+        ("pneumothorax", r"pneumothorax"),
+        ("pleural effusion", r"pleural effusion"),
+    ):
+        match = re.search(pattern, caption, flags=re.IGNORECASE)
+        if match:
+            prefix = caption[max(0, match.start() - 50):match.start()]
+            if re.search(r"\b(?:no|without|absence of|resolved|resolution of)\s+(?:\w+\s+){0,2}$", prefix, re.IGNORECASE):
+                continue
+            return label, pattern
+    return None
+
+
+def _positive_mention(line: str, pattern: str) -> bool:
+    """Require a visible, affirmative mention before trusting any model box."""
+    if not line or re.search(r"\b(?:caption|report(?:ed)?)\b", line, re.IGNORECASE):
+        return False
+    for match in re.finditer(pattern, line, flags=re.IGNORECASE):
+        before = line[max(0, match.start() - 70):match.start()]
+        before = re.split(r"[.;:]", before)[-1]
+        after = line[match.end():match.end() + 55]
+        if re.search(r"\b(?:no|neither|without|absent|negative for|free of|not)\b(?:\W+\w+){0,6}\W*$", before, re.IGNORECASE):
+            continue
+        if re.search(r"^\W*(?:is|are)?\s*not\s+(?:visually\s+)?(?:seen|visible|supported|present|identified)", after, re.IGNORECASE):
+            continue
+        return True
+    return False
+
+
+def _finding_supported(text: str, field: str, finding: str) -> bool:
+    label = "Current" if field == "original_box" else "Historical"
+    match = re.search(rf"{label}:\s*(.*?)(?=(?:Current|Historical|Visual comparison):|\Z)", text, re.IGNORECASE | re.DOTALL)
+    if not match:
+        return False
+    terms = re.findall(r"[a-z]{5,}", finding.lower())
+    terms = [term for term in terms if term not in {
+        "large", "small", "sided", "lower", "upper", "right", "left",
+        "acute", "chronic", "pleural", "pulmonary", "mediastinal", "lung",
+    }]
+    if not terms:
+        return False
+    return _positive_mention(match.group(1), r"\b(?:" + "|".join(map(re.escape, terms)) + r")\b")
 
 
 def _localization_prompt(finding: str) -> str:
@@ -195,10 +252,11 @@ async def compare_insights(
     match_diagnosis: str = Form(...),
     match_asset_id: str = Form(None),
     match_payload: str = Form(None),
+    match_caption: str = Form(None),
 ):
     """Compare two images without using the historical record as model context."""
     # These legacy form fields remain accepted for clients using the existing API.
-    _ = match_diagnosis, match_payload
+    _ = match_payload
     try:
         contents = await original_image.read()
         current_image = Image.open(io.BytesIO(contents)).convert("RGB")
@@ -269,6 +327,17 @@ async def compare_insights(
             status_code=502,
             detail="The local model returned a comparison that needs review. Please retry.",
         )
+    reported = _reported_finding(match_caption or "")
+    if reported and not _positive_mention(_historical_line(text), reported[1]):
+        return {
+            "insights_text": (
+                f"AI visual comparison inconclusive: the model did not confirm the historical "
+                f"case caption's reported {reported[0]}. Review the source caption and X-ray. "
+                "No reliable comparison or suggested boxes are available for this pair."
+            ),
+            "original_box": None,
+            "match_box": None,
+        }
     # A separate two-image check gates localization. Single-image localization
     # produced a box on the clear sample image, so its box alone is insufficient.
     finding_prompt = (
@@ -296,7 +365,7 @@ async def compare_insights(
             ("match_box", historical_image, "historical_finding"),
         ):
             finding = _finding_name(findings.get(finding_key))
-            if finding:
+            if finding and _finding_supported(text, field, finding):
                 try:
                     localized = await asyncio.to_thread(
                         query_medgemma_localization, image,
