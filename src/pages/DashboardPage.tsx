@@ -523,6 +523,8 @@ function MatchesScreen({
   originalProfile: CaseProfile | null;
 }) {
   const selected = selectedMatch !== null ? items[selectedMatch] : null;
+  const historicalCaption = typeof selected?.raw_payload?.study?.caption === "string"
+    ? selected.raw_payload.study.caption : null;
 
   // Modals state
   const [showTwinProfile, setShowTwinProfile] = useState(false);
@@ -767,6 +769,13 @@ function MatchesScreen({
                       </div>
                     )}
                   </div>
+                  {(historicalCaption || selected.summary) && (
+                    <p className="text-xs leading-relaxed text-zinc-500">
+                      <span className="font-semibold text-zinc-600">
+                        {historicalCaption ? "Published image caption:" : "Historical case summary:"}
+                      </span> {historicalCaption || selected.summary}
+                    </p>
+                  )}
                 </div>
               </div>
             </div>
@@ -801,7 +810,10 @@ function MatchesScreen({
                             prose-strong:text-zinc-900 prose-strong:font-semibold
                             prose-li:text-zinc-700 prose-ul:my-2 prose-li:my-1">
                           <ReactMarkdown>{insights.insights_text}</ReactMarkdown>
-                          <p className="text-xs text-zinc-500">AI-generated visual context. Boxes show suggested regions; check the text and boxes against both images.</p>
+                          <p className="text-xs text-zinc-500">
+                            AI-generated visual context. Check it against both images and the historical case description.
+                            {(insights.original_box || insights.match_box) && " Boxes show suggested regions."}
+                          </p>
                         </div>
                       ) : (
                         <p className="text-zinc-400 italic text-sm">No analysis available.</p>
