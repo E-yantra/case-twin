@@ -28,7 +28,7 @@ model did what.
 
 ## Try it
 
-[`demo_samples/`](demo_samples/README.md) has seven ready-made cases (an image plus
+[`demo_samples/`](demo_samples/README.md) has ten ready-made cases (an image plus
 clinician notes each), taken from published case reports that are not in the twin
 library. Every case returns twins with the same or a closely related diagnosis. Its
 README covers how to run a case, a suggested 15-minute session, and the published
