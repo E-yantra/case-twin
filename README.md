@@ -23,6 +23,14 @@ Every AI endpoint returns a `trace` (model, task, time). The UI's **AI pipeline*
 drawer and the **How it works** page show it, so the audience can see which
 model did what.
 
+## Try it
+
+[`demo_samples/`](demo_samples/README.md) has seven ready-made cases (an image plus
+clinician notes each), taken from published case reports that are not in the twin
+library. Every case returns twins with the same or a closely related diagnosis. Its
+README covers how to run a case, a suggested 15-minute session, and the published
+diagnosis for each case.
+
 ## Dataset
 
 The twin library is a deterministic sample of

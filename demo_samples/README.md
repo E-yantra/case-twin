@@ -4,22 +4,53 @@ Seven test cases from published case reports that are **not** in the twin librar
 so the app has to find genuine twins rather than the case itself. Each was checked
 end to end: every case returns twins with the same or a closely related diagnosis.
 
-**How to run one:** open the app, drop the image into the Clinical Copilot chat, paste
-the matching `caseN_notes.txt`, press Enter, then click **Matches**. The notes are
-written in clinician shorthand from the published case, as they would have been at
-first assessment, before the diagnosis.
+## Before you start
 
-| # | Upload | What the AI does for you | Twins found | Published diagnosis (keep for the reveal) |
+1. Open the app (`http://localhost:5173` in development, or port 8080 on the Docker deployment).
+2. Open **AI pipeline** (bottom left) and check every model shows a green tick and the twin
+   library shows **648** indexed case images.
+3. Reload the page between cases, so each case starts fresh.
+
+## Running a case
+
+1. Drag the case's image into the **Clinical Copilot** chat on the right.
+2. Paste the contents of its notes file into the message box and press **Enter**. After
+   about 20 seconds the structured case report appears on the left.
+3. Click **Matches** at the top. The "How these twins were found" panel lists each model
+   step; click a twin to see what happened in that case.
+
+The notes are written in clinician shorthand from the published case, as they would
+have been at first assessment, before the diagnosis.
+
+## The cases
+
+| # | Image + notes | What the AI does for you | Twins found | Published diagnosis (keep for the reveal) |
 |---|---|---|---|---|
-| 1 | `case1_pulmonary_embolism_ct.webp` | Turns a dense ICU note into a structured report and flags **RR 29, systolic BP 77 → emergent**. Flags that the notes say cardiomegaly but the image read doesn't | **5 of 5 pulmonary embolism** cases (top match 79%), with treatments and outcomes | Acute pulmonary embolism presenting with complete heart block (PMC10876825) |
-| 2 | `case2_tuberculosis_chest_xray.webp` | Flags **haemoptysis and weight loss**, records suspected TB, and notices that the image read disagrees with the documented cavities | **Top 2 are tuberculosis**, 3 of 5 overall | Tuberculosis presenting as immune thrombocytopenic purpura (PMC517508) |
-| 3 | `case3_pneumothorax_chest_xray.webp` | COVID patient with sudden chest pain. **SpO2 85% → emergent**, and a discrepancy flag: the notes suspect pneumothorax but the image read misses it | A **tension pneumothorax** twin and a COVID-19 twin in the top 5 | Bilateral pneumothoraces from COVID-related pneumatoceles (PMC7576439) |
-| 4 | `case4_choroidal_metastasis_fundus.webp` | Patient with known cancer and vision loss. The image read calls the fundus "relatively normal", and the system **flags the conflict** with the clinician's findings | 3 of 5 detachment or metastasis cases, incl. **metastatic choroidal melanoma** | Bilateral choroidal metastases from submandibular gland carcinoma (PMC2636054) |
-| 5 | `case5_psoriasis_skin.webp` | Reads the photo as skin (scaling, lichenification on the shins) and structures 20 years of history | **Top 2 are psoriasis** cases, one a paradoxical drug reaction | Psoriasis with coexisting bullous pemphigoid (PMC10460171) |
-| 6 | `case6_retinal_vasculitis_fundus.webp` | Child with a painful red eye and high pressure; structures a dense eye exam | Childhood retinal vascular diseases incl. **Coats' disease** | Bilateral occlusive retinal vasculitis with neovascular glaucoma (PMC11761241) |
-| 7 | `case7_granulomas_skin_biopsy.webp` | "?sarcoidosis vs TB": keeps both as suspected diagnoses instead of picking one | Granulomatous diseases: **orbital tuberculosis** (twice) and granulomatous uveitis | Pulmonary tuberculosis with simultaneous lung and skin sarcoidosis (PMC2822819) |
+| 1 | `case1_pulmonary_embolism_ct.webp` + `case1_notes.txt` | Turns a dense ICU note into a structured report and flags **RR 29, systolic BP 77 → emergent**. Flags that the notes say cardiomegaly but the image read doesn't | **5 of 5 pulmonary embolism** cases (top match 79%), with treatments and outcomes | Acute pulmonary embolism presenting with complete heart block (PMC10876825) |
+| 2 | `case2_tuberculosis_chest_xray.webp` + `case2_notes.txt` | Flags **haemoptysis and weight loss**, records suspected TB, and notices that the image read disagrees with the documented cavities | **Top 2 are tuberculosis**, 3 of 5 overall | Tuberculosis presenting as immune thrombocytopenic purpura (PMC517508) |
+| 3 | `case3_pneumothorax_chest_xray.webp` + `case3_notes.txt` | COVID patient with sudden chest pain. **SpO2 85% → emergent**, and a discrepancy flag: the notes suspect pneumothorax but the image read misses it | A **tension pneumothorax** twin and a COVID-19 twin in the top 5 | Bilateral pneumothoraces from COVID-related pneumatoceles (PMC7576439) |
+| 4 | `case4_choroidal_metastasis_fundus.webp` + `case4_notes.txt` | Patient with known cancer and vision loss. The image read calls the fundus "relatively normal", and the system **flags the conflict** with the clinician's findings | 3 of 5 detachment or metastasis cases, incl. **metastatic choroidal melanoma** | Bilateral choroidal metastases from submandibular gland carcinoma (PMC2636054) |
+| 5 | `case5_psoriasis_skin.webp` + `case5_notes.txt` | Reads the photo as skin (scaling, lichenification on the shins) and structures 20 years of history | **Top 2 are psoriasis** cases, one a paradoxical drug reaction | Psoriasis with coexisting bullous pemphigoid (PMC10460171) |
+| 6 | `case6_retinal_vasculitis_fundus.webp` + `case6_notes.txt` | Child with a painful red eye and high pressure; structures a dense eye exam | Childhood retinal vascular diseases incl. **Coats' disease** | Bilateral occlusive retinal vasculitis with neovascular glaucoma (PMC11761241) |
+| 7 | `case7_granulomas_skin_biopsy.webp` + `case7_notes.txt` | "?sarcoidosis vs TB": keeps both as suspected diagnoses instead of picking one | Granulomatous diseases: **orbital tuberculosis** (twice) and granulomatous uveitis | Pulmonary tuberculosis with simultaneous lung and skin sarcoidosis (PMC2822819) |
 
-**Good things to try on any case**
+## A 15-minute session
+
+1. **Case 1, pulmonary embolism (5 min).** The headline: a messy ICU note becomes a
+   structured report with red flags and an emergent rating; five pulmonary-embolism twins
+   come back, each with its treatment and outcome. Open one twin and ask the Copilot
+   how it was treated.
+2. **Case 3, pneumothorax (4 min).** The AI checks itself: the image read misses the
+   pneumothorax, and the system flags the disagreement for the clinician instead of
+   hiding it.
+3. **Case 5, psoriasis (3 min).** A different kind of image (a skin photo) and the
+   local-language explanation: highlight "lichenification" and click मराठी or हिंदी.
+4. **AI pipeline drawer (3 min).** Walk through which model did what: Gemma 4,
+   MedGemma, MedSigLIP, Qwen3 embeddings and the reranker.
+
+Keep cases 2, 4, 6 and 7 for questions or a longer session.
+
+## Good things to try on any case
 - Highlight a term (e.g. "cavities", "RAPD", "exudative RD") and click **हिंदी** or **मराठी**: MedGemma explains it, then Gemma 4 rewrites it simply for the patient.
 - **Enhance Profile** for MedGemma's differentials, risk factors and missing information.
 - Open a twin and **Ask Copilot** "How was the twin treated?" or "What should I check next?"
