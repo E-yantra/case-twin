@@ -85,9 +85,15 @@ function isEmpty(val: unknown): boolean {
 
 // ─── Agentic follow-up generator ───────────────────────────────────────────
 
-export function generateAgenticFollowup(profile: CaseProfile, confidence: number): AgenticFollowup {
+export function generateAgenticFollowup(
+    profile: CaseProfile, confidence: number, answeredFields: string[] = [],
+): AgenticFollowup {
+    // Skip fields the clinician already answered with "none"/"unknown".
     const missingPriority = PRIORITY_CHECKLIST.filter(item => {
+        if (answeredFields.includes(item.key)) return false;
         const val = getNestedValue(profile as unknown as Record<string, unknown>, item.key);
+        // The question asks for a "suspected or working" diagnosis, so a suspected one answers it.
+        if (item.key === "assessment.diagnosis_primary" && !isEmpty(profile.assessment.suspected_primary)) return false;
         return isEmpty(val);
     });
 

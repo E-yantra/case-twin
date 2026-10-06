@@ -50,6 +50,12 @@ export interface OrchestratorState {
     readyToProceed: boolean;
     /** Every clinician note so far; each turn re-extracts from the full record. */
     notesSoFar: string;
+    /**
+     * Checklist fields the clinician already answered with nothing to record
+     * ("no comorbidities", "unknown"). They stay empty in the profile, so without
+     * this list the same follow-up question would repeat forever.
+     */
+    answeredFields: string[];
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -83,6 +89,7 @@ export function createInitialState(): OrchestratorState {
         currentQuestion: null,
         readyToProceed: false,
         notesSoFar: "",
+        answeredFields: [],
     };
 }
 
@@ -177,7 +184,14 @@ export async function processIntakeTurn(input: ProcessTurnInput): Promise<Proces
     const expandedFields = diffExtraFields(prevProfile.extra_fields ?? {}, mergedProfile.extra_fields ?? {});
 
     // Build assistant response
-    const followup = generateAgenticFollowup(mergedProfile, conf.score);
+    // The clinician replied to the last question but the field is still empty:
+    // that is an answer ("none" / "not known"), so do not ask it again.
+    const answeredFields = [...(currentState.answeredFields ?? [])];
+    const asked = currentState.currentQuestion;
+    if (asked && userText.trim() && !answeredFields.includes(asked) && !hasValue(mergedProfile, asked)) {
+        answeredFields.push(asked);
+    }
+    const followup = generateAgenticFollowup(mergedProfile, conf.score, answeredFields);
     const patchSummary = patchedFields.length > 0
         ? summarizePatch(patchedFields)
         : null;
@@ -235,6 +249,7 @@ export async function processIntakeTurn(input: ProcessTurnInput): Promise<Proces
             phase: nextPhase,
             messages: [...currentState.messages, ...allMessages],
             currentQuestion: followup.priority_fields[0] ?? null,
+            answeredFields,
             readyToProceed: conf.score >= PROFILE_READY_THRESHOLD,
             notesSoFar,
         },
@@ -242,6 +257,13 @@ export async function processIntakeTurn(input: ProcessTurnInput): Promise<Proces
     };
 }
 
+
+/** True when the profile has a non-empty value at a dotted path such as "patient.comorbidities". */
+function hasValue(profile: CaseProfile, path: string): boolean {
+    const value = path.split(".").reduce<unknown>(
+        (node, key) => (node && typeof node === "object" ? (node as Record<string, unknown>)[key] : undefined), profile);
+    return !(value === null || value === undefined || value === "" || (Array.isArray(value) && value.length === 0));
+}
 
 // ─── Profile Diff ──────────────────────────────────────────────────────────
 
