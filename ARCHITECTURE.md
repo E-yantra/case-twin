@@ -767,7 +767,7 @@ the UI needs lists. The base URL is `VITE_API_URL` (`src/lib/api.ts`).
 │   └── test_*.py                pytest suites
 ├── data_pipeline/
 │   └── prepare_multicare.py     Sample, quality check, extraction, manifest
-├── demo_samples/                Seven demo cases and the facilitator guide
+├── demo_samples/                Ten demo cases and the facilitator guide
 ├── medsiglip_inference_endpoint/  Legacy Hugging Face endpoint handler (the application does not use it)
 └── src/
     ├── pages/                   DashboardPage, AboutPage, ChatModelsPage
