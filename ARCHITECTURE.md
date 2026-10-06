@@ -608,7 +608,7 @@ or pages. The store is in memory. Thus, a page reload starts a new session.
 | Field | Content |
 |---|---|
 | `profile` | The current case profile |
-| `orchestratorState` | Copilot messages, phase and `notesSoFar` |
+| `orchestratorState` | Copilot messages, phase, `notesSoFar`, `currentQuestion` and `answeredFields` |
 | `step` | The wizard step |
 | `uploadedFile` | The case image |
 | `matchResults`, `searchMeta`, `selectedMatch`, `isSearching`, `searchError`, `lastSearchKey` | The twin search state |
@@ -627,8 +627,17 @@ When the user sends a message, the orchestrator does these steps:
    empty value keeps the old value.
 4. It compares the fields and shows "captured" chips. It calculates the
    completeness with `computeProfileConfidence` (14 fields; the profile is ready
-   at 60%). It asks a follow-up question from a fixed checklist
-   (`agenticCopilot.ts`).
+   at 60%). A suspected diagnosis counts as a diagnosis.
+5. It asks a follow-up question from a fixed checklist (`agenticCopilot.ts`).
+   The question is about the first empty field that the clinician did not
+   already answer.
+
+**Answered fields.** An answer such as "no comorbidities" gives an empty field.
+Thus, the field stays empty after the answer. The orchestrator records the field
+of each question in `currentQuestion`. If the clinician replies and that field
+is still empty, the orchestrator adds the field to `answeredFields`. The
+checklist does not ask about a field in `answeredFields` again. The
+diagnosis question does not occur when `suspected_primary` has a value.
 
 If an error occurs, the chat shows it, and the orchestrator keeps the previous
 profile.
