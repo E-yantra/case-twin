@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Check, Info, MessageSquare } from "lucide-react";
+import { Check, Info, MessageSquare, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type Step = 0 | 1 | 2 | 3;
@@ -73,16 +73,25 @@ export function CaseTopBar({ active, onStepChange }: CaseTopBarProps) {
           </ol>
         </div>
 
-        <div className="hidden lg:flex items-center gap-4">
+        <div className="flex items-center gap-2">
           <Link
             to="/about"
             className={cn(
-              "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors",
+              "hidden lg:flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors",
               active === "about" ? "bg-zinc-100 text-zinc-900" : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50"
             )}
           >
             <Info className="w-3.5 h-3.5" /> How it works
           </Link>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            aria-label="Refresh page"
+            title="Refresh page"
+            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
+          >
+            <RefreshCw className="h-4 w-4" aria-hidden="true" />
+          </button>
         </div>
       </div>
     </header>
