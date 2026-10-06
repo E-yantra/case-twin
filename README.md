@@ -5,6 +5,9 @@ structured case report, then finds the most similar published cases ("twins")
 in an open dataset and shows what was found, done and concluded in them. It is
 a teaching demo for local medical AI models, not a clinical tool.
 
+For how it works end to end (components, models, data contracts, request
+flows, frontend state, guardrails), see [ARCHITECTURE.md](ARCHITECTURE.md).
+
 ## What each model does
 
 | Step | Model | AI concept |
