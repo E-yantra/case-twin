@@ -3,6 +3,10 @@ WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci
 COPY . .
+# The browser calls its own origin; nginx proxies /api to the backend service.
+ARG VITE_API_URL=/api
+ARG VITE_OPENWEBUI_URL=
+ENV VITE_API_URL=$VITE_API_URL VITE_OPENWEBUI_URL=$VITE_OPENWEBUI_URL
 RUN npm run build
 
 FROM nginx:1.27-alpine

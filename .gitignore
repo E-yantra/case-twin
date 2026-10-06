@@ -49,3 +49,5 @@ venv/
 fully-done/
 dataset/
 medical_datasets/
+
+*.tar.gz

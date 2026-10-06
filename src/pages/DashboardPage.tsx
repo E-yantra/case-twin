@@ -1,8 +1,8 @@
 import { useCallback, useRef, useState, useMemo, useEffect, type ButtonHTMLAttributes, type ReactNode } from "react";
 import { useDashboardStore } from "@/store/dashboardStore";
-import { Check, FileText, Loader2, MapPin, Settings2, Stethoscope, FolderOpen, Plus, HeartPulse, CloudOff, Scan, Microscope, Activity, ChevronLeft, Building2, X, Phone, ChevronRight } from "lucide-react";
+import { Check, FileText, Loader2, MapPin, Settings2, Stethoscope, FolderOpen, Plus, HeartPulse, CloudOff, Scan, Microscope, Activity, ChevronLeft, Building2, X, Phone, ChevronRight, Pill, Flag, RefreshCw } from "lucide-react";
 import { CaseTopBar, type Step } from "@/components/CaseTopBar";
-import { searchByImage, findHospitalsRoute, compareInsights, type ComparisonInsights } from "@/lib/mockUploadApis";
+import { searchTwins, findHospitalsRoute, compareInsights, type ComparisonInsights, type MatchItem, type SearchResult } from "@/lib/twinApi";
 import { API_BASE } from "@/lib/api";
 import { computeProfileConfidence, PROFILE_READY_THRESHOLD } from "@/lib/caseProfileUtils";
 
@@ -16,7 +16,8 @@ import { MapContainer, TileLayer, Marker, Popup } from "react-leaflet";
 import "leaflet/dist/leaflet.css";
 import L from "leaflet";
 import ReactMarkdown from "react-markdown";
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from "@/components/ui/dialog";
+import { SelectionExplainPopover } from "@/components/SelectionExplainPopover";
+import { AiPipelinePanel, ModelChip } from "@/components/AiPipelinePanel";
 import { toast } from "sonner";
 
 const defaultIcon = new L.Icon({
@@ -31,27 +32,6 @@ const defaultIcon = new L.Icon({
 
 type OutcomeVariant = "success" | "warning" | "neutral";
 
-interface MatchItem {
-  score: number;
-  diagnosis: string;
-  summary: string;
-  facility: string;
-  outcome: string;
-  outcomeVariant: "success" | "warning" | "neutral";
-  image_url: string;
-  asset_id?: string;
-  related_image_urls?: string[];
-  age?: number;
-  gender?: string;
-  pmc_id?: string;
-  article_title?: string;
-  journal?: string;
-  year?: string;
-  radiology_view?: string;
-  case_text?: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  raw_payload?: Record<string, any>;
-}
 interface RouteCenter {
   name: string;
   url?: string;
@@ -61,55 +41,6 @@ interface RouteCenter {
   lat?: number;
   lng?: number;
 }
-
-const matchItems: MatchItem[] = [
-  {
-    score: 98,
-    diagnosis: "Bilateral ground-glass opacities",
-    summary: "High concordance with presentation of acute hypoxemic respiratory failure.",
-    facility: "Mayo Clinic",
-    outcome: "Discharged at 14 days",
-    outcomeVariant: "success",
-    image_url: ""
-  },
-  {
-    score: 82,
-    diagnosis: "Acute respiratory distress syndrome",
-    summary: "Matches pattern of diffuse bilateral alveolar damage.",
-    facility: "Cleveland Clinic",
-    outcome: "Recovered via ECMO",
-    outcomeVariant: "success",
-    image_url: ""
-  },
-  {
-    score: 85,
-    diagnosis: "Atypical pneumonia",
-    summary: "Similar peripheral distribution but less extensive consolidation.",
-    facility: "Mass General",
-    outcome: "Required ICU transfer",
-    outcomeVariant: "warning",
-    image_url: ""
-  },
-  {
-    score: 74,
-    diagnosis: "Pulmonary alveolar proteinosis",
-    summary: "Some morphological overlap in 'crazy-paving' pattern.",
-    facility: "Johns Hopkins",
-    outcome: "Improved post-lavage",
-    outcomeVariant: "success",
-    image_url: ""
-  },
-  {
-    score: 61,
-    diagnosis: "Pulmonary edema",
-    summary: "Lower confidence match due to presence of cardiomegaly.",
-    facility: "UCSF Medical Center",
-    outcome: "Ongoing diuretic therapy",
-    outcomeVariant: "neutral",
-    image_url: ""
-  }
-];
-
 
 function SurfaceCard({
   className,
@@ -220,6 +151,7 @@ function UploadScreen({
 }) {
   const profile = useDashboardStore(s => s.profile);
   const setProfile = useDashboardStore(s => s.setProfile);
+  const addTrace = useDashboardStore(s => s.addTrace);
 
   const conf = profile ? computeProfileConfidence(profile) : { score: 0, filled: 0, total: 13, missing: [] };
 
@@ -236,8 +168,9 @@ function UploadScreen({
   }, [onStepChange]);
 
   const [isEnhancing, setIsEnhancing] = useState(false);
-  const [enhancedSynthesis, setEnhancedSynthesis] = useState<string | null>(null);
-  const [enhancedImaging, setEnhancedImaging] = useState<string | null>(null);
+  const enhancedSynthesis = useDashboardStore(s => s.enhancedSynthesis);
+  const enhancedImaging = useDashboardStore(s => s.enhancedImaging);
+  const setEnhanced = useDashboardStore(s => s.setEnhanced);
 
   const handleEnhanceProfile = async () => {
     if (!profile) return;
@@ -255,17 +188,14 @@ function UploadScreen({
         body: fd,
       });
 
+      const data = await response.json().catch(() => ({}));
       if (!response.ok) {
-        throw new Error("Failed to enhance profile");
+        throw new Error(data.detail || `Enhance failed (${response.status})`);
       }
-
-      const data = await response.json();
-      setEnhancedSynthesis(data.synthesis);
-      if (data.imaging_context) {
-        setEnhancedImaging(data.imaging_context);
-      }
+      setEnhanced(data.synthesis, data.imaging_context ?? null);
+      if (data.trace) addTrace("Clinical synthesis", data.trace);
     } catch (error) {
-      console.error("Error enhancing profile:", error);
+      toast.error(error instanceof Error ? error.message : "MedGemma could not enhance the profile.");
     } finally {
       setIsEnhancing(false);
     }
@@ -319,7 +249,7 @@ function UploadScreen({
               <div>
                 <h2 className="text-[22px] font-semibold tracking-tight text-zinc-900 leading-none">Case Profile</h2>
                 <p className="mt-1.5 flex items-center gap-1.5 text-[13px] font-medium text-zinc-500">
-                  <Stethoscope className="h-3.5 w-3.5 text-[var(--mr-action)]" /> MedGemma Extracted
+                  <Stethoscope className="h-3.5 w-3.5 text-[var(--mr-action)]" /> Structured by Gemma 4 · images read by MedGemma
                 </p>
               </div>
             </div>
@@ -408,6 +338,48 @@ function UploadScreen({
 
 
 
+const OUTCOME_LABEL: Record<OutcomeVariant, string> = {
+  success: "Favourable outcome",
+  warning: "Poor outcome",
+  neutral: "Outcome reported",
+};
+
+const CHANNEL_LABEL: Record<string, string> = {
+  image: "Image",
+  crossmodal: "Text→image",
+  text: "Report",
+  rerank: "Rerank",
+};
+
+const COLLECTION_LABEL: Record<string, string> = {
+  cxr: "Chest X-ray",
+  chest_ct: "Chest CT",
+  derm: "Dermatology",
+  fundus: "Fundus",
+  histopath: "H&E pathology",
+};
+
+/** Per-channel similarity bars: the "why" behind a twin's score. */
+function ScoreBreakdown({ item, compact }: { item: MatchItem; compact?: boolean }) {
+  const entries = Object.entries(item.scores ?? {}).filter(([key]) => key in CHANNEL_LABEL);
+  if (entries.length === 0) return null;
+  return (
+    <div className={cn("flex flex-wrap gap-x-3 gap-y-1", compact ? "text-[10px]" : "text-[11px]")} title="Similarity per signal, scaled to this library (weights in brackets)">
+      {entries.map(([key, value]) => (
+        <span key={key} className="inline-flex items-center gap-1 text-zinc-500"
+          title={`raw ${key === "rerank" ? "logit" : "cosine"}: ${item.raw_scores?.[key as keyof typeof item.raw_scores]?.toFixed(3) ?? "n/a"}`}>
+          <span className="font-medium text-zinc-600">{CHANNEL_LABEL[key]}</span>
+          <span className="inline-block h-1.5 w-10 overflow-hidden rounded-full bg-zinc-100">
+            <span className="block h-full rounded-full bg-[var(--mr-action)]" style={{ width: `${Math.max(0, Math.min(1, value)) * 100}%` }} />
+          </span>
+          <span className="tabular-nums">{Math.round(value * 100)}</span>
+          {!compact && item.weights?.[key] !== undefined && <span className="text-zinc-400">({item.weights[key]})</span>}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 function MatchCard({
   item,
   selected,
@@ -419,7 +391,8 @@ function MatchCard({
   onSelect: () => void;
   condensed?: boolean;
 }) {
-  const ringClass = item.score >= 90 ? "border-[var(--mr-action)] text-[var(--mr-action)]" : "border-[var(--mr-border)] text-[var(--mr-text)]";
+  const ringClass = item.score >= 75 ? "border-[var(--mr-action)] text-[var(--mr-action)]" : "border-[var(--mr-border)] text-[var(--mr-text)]";
+  const outcomeKnown = item.outcome && item.outcome !== "Outcome not reported";
 
   if (condensed) {
     return (
@@ -435,25 +408,16 @@ function MatchCard({
             <span className="text-[13px] font-semibold">{item.score}%</span>
           </div>
           <div className="flex-1 min-w-0 flex justify-end">
-            <OutcomeBadge variant={item.outcomeVariant} label={item.outcome} />
+            {outcomeKnown && <OutcomeBadge variant={item.outcomeVariant} label={OUTCOME_LABEL[item.outcomeVariant]} />}
           </div>
         </div>
         <div className="space-y-1.5 min-w-0">
           <h3 className="font-semibold text-zinc-900 text-[14px] leading-snug line-clamp-2 group-hover:text-[var(--mr-action)] transition-colors break-words">{item.diagnosis}</h3>
           <p className="text-[12px] leading-relaxed text-zinc-500 line-clamp-2 break-words">{item.summary}</p>
-          {item.raw_payload && item.raw_payload.patient?.comorbidities?.length > 0 && (
-            <div className="flex flex-wrap gap-1 mt-1">
-              {item.raw_payload.patient.comorbidities.slice(0, 2).map((c: string, i: number) => (
-                <span key={i} className="text-[10px] px-1.5 py-0.5 rounded-sm bg-zinc-100 text-zinc-600 border border-zinc-200 truncate max-w-[100px]">{c}</span>
-              ))}
-              {item.raw_payload.patient.comorbidities.length > 2 && (
-                <span className="text-[10px] px-1.5 py-0.5 rounded-sm bg-zinc-50 text-zinc-400">+{item.raw_payload.patient.comorbidities.length - 2}</span>
-              )}
-            </div>
-          )}
         </div>
-        <div className="flex flex-wrap text-[10px] font-medium text-zinc-400 uppercase tracking-wider mt-1 gap-x-2 gap-y-1">
-          <span className="truncate max-w-[120px]">{item.facility}</span>
+        <ScoreBreakdown item={item} compact />
+        <div className="flex flex-wrap text-[10px] font-medium text-zinc-400 uppercase tracking-wider gap-x-2 gap-y-1">
+          {item.collection && <span>{COLLECTION_LABEL[item.collection] ?? item.collection}</span>}
           {item.journal && <span className="truncate max-w-[100px]">• {item.journal}</span>}
           {item.year && <span>• {item.year}</span>}
         </div>
@@ -464,7 +428,7 @@ function MatchCard({
   return (
     <article
       className={cn(
-        "mr-surface flex flex-col gap-4 p-5 lg:h-[132px] lg:flex-row lg:items-center hover:shadow-md transition-all cursor-pointer group shrink-0",
+        "mr-surface flex flex-col gap-4 p-5 lg:flex-row lg:items-start hover:shadow-md transition-all cursor-pointer group shrink-0",
         selected && "border-l-[3px] border-l-[var(--mr-action)] bg-blue-50/10"
       )}
       onClick={onSelect}
@@ -473,35 +437,90 @@ function MatchCard({
         <span className="text-[17px] font-semibold leading-[22px]">{item.score}%</span>
       </div>
 
-      <div className="min-w-0 flex-1 space-y-1.5 pr-4 py-1">
+      <div className="min-w-0 flex-1 space-y-2 pr-4">
         <p className="text-[15px] font-semibold leading-[20px] text-zinc-900 group-hover:text-[var(--mr-action)] transition-colors line-clamp-2 break-words">{item.diagnosis}</p>
         <p className="text-[13px] leading-[20px] text-zinc-500 line-clamp-2 break-words">{item.summary}</p>
 
-        {/* Rich Data Tags from raw_payload */}
-        <div className="flex flex-wrap gap-1.5 mt-2">
-          {item.raw_payload?.patient?.comorbidities?.slice(0, 3).map((c: string, idx: number) => (
-            <span key={idx} className="text-[11px] px-2 py-0.5 bg-zinc-100 text-zinc-700 rounded-md border border-zinc-200/80 truncate max-w-[150px]">{c}</span>
-          ))}
-          {item.raw_payload?.presentation?.chief_complaint && (
-            <span className="inline-flex items-center text-[11px] font-medium px-2 py-0.5 bg-[#F1F1EF] text-[#37352F] rounded text-opacity-90 max-w-[200px] truncate border border-[#E9E9E7]" title="Chief Complaint">
-              <span className="font-semibold text-rose-600/80 mr-1.5">CC:</span>
-              {item.raw_payload.presentation.chief_complaint.slice(0, 40)}{item.raw_payload.presentation.chief_complaint.length > 40 ? "..." : ""}
-            </span>
-          )}
-        </div>
+        {(item.conclusion || outcomeKnown) && (
+          <div className="rounded-lg border border-zinc-100 bg-zinc-50/70 px-3 py-2 text-[12px] leading-relaxed text-zinc-600 space-y-1">
+            {item.conclusion && <p className="line-clamp-2"><span className="font-semibold text-zinc-800">Conclusion: </span>{item.conclusion}</p>}
+            {outcomeKnown && <p className="line-clamp-2"><span className="font-semibold text-zinc-800">Outcome: </span>{item.outcome}</p>}
+          </div>
+        )}
 
-        <div className="flex flex-wrap text-[11px] text-zinc-400 gap-x-3 gap-y-1 mt-2 font-medium">
+        <ScoreBreakdown item={item} />
+
+        <div className="flex flex-wrap text-[11px] text-zinc-400 gap-x-3 gap-y-1 font-medium">
+          {item.collection && <span className="text-zinc-500">{COLLECTION_LABEL[item.collection] ?? item.collection}</span>}
           {item.pmc_id && <span className="flex items-center gap-1"><FileText className="h-3 w-3" /> {item.pmc_id}</span>}
           {item.year && <span>• {item.year}</span>}
-          {item.journal && <span className="truncate max-w-[150px]">• {item.journal}</span>}
+          {item.journal && <span className="truncate max-w-[180px]">• {item.journal}</span>}
         </div>
       </div>
 
       <div className="flex shrink-0 flex-col gap-2 lg:items-end">
         <p className="text-[13px] font-medium text-zinc-500 tracking-wide uppercase">{item.facility}</p>
-        <OutcomeBadge variant={item.outcomeVariant} label={item.outcome} />
+        {outcomeKnown && <OutcomeBadge variant={item.outcomeVariant} label={OUTCOME_LABEL[item.outcomeVariant]} />}
       </div>
     </article>
+  );
+}
+
+function FindingList({ items, empty }: { items: string[]; empty: string }) {
+  if (items.length === 0) return <span className="text-zinc-400 italic text-[13px]">{empty}</span>;
+  return (
+    <ul className="flex flex-col gap-1 text-[13px]">
+      {items.slice(0, 6).map((finding, i) => <li key={i}>• {finding}</li>)}
+    </ul>
+  );
+}
+
+/** What the published twin case found, did and concluded — the payoff of a twin match. */
+function TwinStory({ item }: { item: MatchItem }) {
+  const p = item.raw_payload ?? {};
+  const treatments: string[] = [...(item.treatments ?? []), ...(p.management?.procedures ?? [])];
+  const followUp: string | null = p.outcome?.follow_up ?? null;
+  const outcomeKnown = item.outcome && item.outcome !== "Outcome not reported";
+  const related = item.related_image_urls ?? [];
+  if (!item.conclusion && !outcomeKnown && treatments.length === 0 && related.length === 0) return null;
+  return (
+    <div className="mb-8 rounded-2xl border border-zinc-200 bg-white p-6 shadow-sm space-y-4">
+      <h3 className="text-[18px] font-semibold text-zinc-900">What happened in the twin case</h3>
+      <div className="grid gap-4 md:grid-cols-2 text-[14px] leading-relaxed text-zinc-700">
+        {treatments.length > 0 && (
+          <div>
+            <p className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wider text-zinc-500"><Pill className="h-3.5 w-3.5" /> Management</p>
+            <ul className="space-y-0.5">{treatments.slice(0, 6).map((t, i) => <li key={i}>• {t}</li>)}</ul>
+          </div>
+        )}
+        {outcomeKnown && (
+          <div>
+            <p className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wider text-zinc-500"><Activity className="h-3.5 w-3.5" /> Outcome</p>
+            <p>{item.outcome}</p>
+            {followUp && <p className="mt-1 text-zinc-500">Follow-up: {followUp}</p>}
+          </div>
+        )}
+        {item.conclusion && (
+          <div className="md:col-span-2 rounded-lg bg-[var(--mr-action)]/5 border border-[var(--mr-action)]/15 px-4 py-3">
+            <p className="mb-1 flex items-center gap-1.5 text-[12px] font-semibold uppercase tracking-wider text-[var(--mr-action)]"><Flag className="h-3.5 w-3.5" /> Authors' conclusion</p>
+            <p className="text-zinc-800">{item.conclusion}</p>
+          </div>
+        )}
+      </div>
+      {related.length > 0 && (
+        <div>
+          <p className="mb-2 text-[12px] font-semibold uppercase tracking-wider text-zinc-500">Other images from this case</p>
+          <div className="flex gap-2 overflow-x-auto pb-1">
+            {related.map((url) => (
+              <a key={url} href={url} target="_blank" rel="noreferrer" className="shrink-0">
+                <img src={url} alt="Related case image" className="h-24 w-24 rounded-lg border border-zinc-200 object-cover hover:opacity-80" />
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+      <p className="text-[11px] text-zinc-400">Structured from the published case report. Highlight any term to have MedGemma explain it.</p>
+    </div>
   );
 }
 
@@ -513,6 +532,8 @@ function MatchesScreen({
   isLoading,
   originalFile,
   originalProfile,
+  searchMeta,
+  onRefresh,
 }: {
   selectedMatch: number | null;
   onSelectMatch: (index: number | null) => void;
@@ -521,8 +542,11 @@ function MatchesScreen({
   isLoading: boolean;
   originalFile: File | null;
   originalProfile: CaseProfile | null;
+  searchMeta: Omit<SearchResult, "matches"> | null;
+  onRefresh: () => void;
 }) {
   const selected = selectedMatch !== null ? items[selectedMatch] : null;
+  const addTrace = useDashboardStore(s => s.addTrace);
   const historicalCaption = typeof selected?.raw_payload?.study?.caption === "string"
     ? selected.raw_payload.study.caption : null;
 
@@ -587,11 +611,14 @@ function MatchesScreen({
     if (selected && originalFile && showInsights && !insights && !insightsLoading && !insightsError) {
       setInsightsLoading(true);
       compareInsights(originalFile, selected)
-        .then((res) => setInsights(res))
+        .then((res) => {
+          setInsights(res);
+          if (res.trace) addTrace("Image comparison", res.trace);
+        })
         .catch((err) => setInsightsError(err instanceof Error ? err.message : "Analysis failed. Please try again."))
         .finally(() => setInsightsLoading(false));
     }
-  }, [selected, originalFile, showInsights, insights, insightsLoading, insightsError]);
+  }, [selected, originalFile, showInsights, insights, insightsLoading, insightsError, addTrace]);
 
   // Handle toggle click
   const handleToggleInsights = () => {
@@ -618,20 +645,51 @@ function MatchesScreen({
             {selected === null ? "Closest Case Twins" : "Top Matches"}
           </h1>
           {selected === null && (
-            <div className="flex items-center animate-in fade-in duration-500">
-              <span className="text-[13px] font-medium text-zinc-500 tracking-wide uppercase">Top 10 results</span>
+            <div className="flex items-center gap-3 animate-in fade-in duration-500">
+              <span className="text-[13px] font-medium text-zinc-500 tracking-wide uppercase">Top {items.length} results</span>
+              <button onClick={onRefresh} disabled={isLoading} className="flex items-center gap-1 text-[12px] font-medium text-[var(--mr-action)] hover:underline disabled:opacity-50">
+                <RefreshCw className="h-3.5 w-3.5" /> Re-run search
+              </button>
             </div>
           )}
         </div>
 
+        {selected === null && searchMeta && !isLoading && (
+          <div className="shrink-0 rounded-xl border border-zinc-200 bg-white p-4 text-[12px] text-zinc-600 space-y-2">
+            <p className="font-semibold text-zinc-800">How these twins were found</p>
+            {searchMeta.routing && (
+              <p>
+                <span className="font-medium">MedSigLIP zero-shot</span> read your image as{" "}
+                <span className="font-semibold text-zinc-900">{searchMeta.routing.scores[0]?.label}</span>
+                {searchMeta.routing.scores.length > 1 && (
+                  <span className="text-zinc-400"> (next: {searchMeta.routing.scores[1].label})</span>
+                )}
+                {searchMeta.routing.collection
+                  ? ", so only that collection was searched."
+                  : ", which is not one of the library's image types, so all collections were searched."}
+              </p>
+            )}
+            <ol className="space-y-1">
+              {searchMeta.trace.map((step, i) => (
+                <li key={i} className="flex items-center gap-2">
+                  <span className="w-4 text-right text-zinc-400">{i + 1}.</span>
+                  <ModelChip model={step.model} />
+                  <span className="flex-1">{step.task}</span>
+                  {step.ms > 0 && <span className="tabular-nums text-zinc-400">{(step.ms / 1000).toFixed(1)}s</span>}
+                </li>
+              ))}
+            </ol>
+          </div>
+        )}
+
         {isLoading ? (
           <div className="flex flex-col items-center justify-center gap-4 py-24 text-[var(--mr-text-secondary)] bg-zinc-50/50 rounded-2xl border border-dashed border-zinc-200">
             <Loader2 className="h-8 w-8 animate-spin text-[var(--mr-action)]" />
-            <p className="text-[15px] font-medium text-zinc-600">Generating MedSiglip embedding and searching cases...</p>
+            <p className="text-[15px] font-medium text-zinc-600">Embedding the image and case report, searching and reranking twins…</p>
           </div>
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center gap-4 py-24 text-[var(--mr-text-secondary)] bg-zinc-50/50 rounded-2xl border border-dashed border-zinc-200">
-            <p className="text-[15px] font-medium text-zinc-600">No matches found. Upload a chest X-ray image to search.</p>
+            <p className="text-[15px] font-medium text-zinc-600">No twins found. Add an image or more case details, then re-run the search.</p>
           </div>
         ) : (
           <div className={cn(
@@ -640,7 +698,7 @@ function MatchesScreen({
           )}>
             {items.map((item, idx) => (
               <MatchCard
-                key={`${item.diagnosis}-${item.score}-${idx}`}
+                key={item.id ?? idx}
                 item={item}
                 selected={idx === selectedMatch}
                 onSelect={() => onSelectMatch(idx === selectedMatch && selected !== null ? null : idx)}
@@ -653,7 +711,7 @@ function MatchesScreen({
 
       {/* Right Detail Container (Big Canvas) */}
       {selected !== null && (
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm animate-in fade-in zoom-in-95 slide-in-from-right-8 duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm animate-in fade-in zoom-in-95 slide-in-from-right-8 duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]">
           {/* Canvas Header */}
           <div className="flex items-center justify-between border-b border-zinc-100 bg-zinc-50/50 px-6 py-4 shrink-0">
             <div className="flex items-center gap-3">
@@ -667,7 +725,9 @@ function MatchesScreen({
               <h2 className="text-[17px] font-semibold text-zinc-900">In-depth Comparison</h2>
             </div>
             <div className="flex items-center gap-3">
-              {/* MedGemma Toggle */}
+              {/* Run AI Analysis (MedGemma image comparison) is hidden for the demo: MedGemma's
+                  reads of published figures were not reliable enough (left/right swaps, missed
+                  findings). The /compare_insights endpoint is kept; restore this button to re-enable.
               <button
                 onClick={handleToggleInsights}
                 className={cn(
@@ -682,6 +742,7 @@ function MatchesScreen({
               </button>
 
               <div className="w-px h-5 bg-zinc-200 mx-1" />
+              */}
 
               <MedButton variant="secondary" size="sm" onClick={() => setShowTwinProfile(true)}>
                 Full Profile
@@ -692,8 +753,8 @@ function MatchesScreen({
             </div>
           </div>
 
-          {/* Canvas Content */}
-          <div className="flex-1 overflow-y-auto bg-zinc-50/30 p-6 md:p-8">
+          {/* Canvas Content — highlight any term to have MedGemma explain it */}
+          <SelectionExplainPopover className="flex-1 overflow-y-auto bg-zinc-50/30 p-6 md:p-8">
             <div className="max-w-[1000px] mx-auto space-y-8 pb-10">
 
               {/* Dual Image Comparison Banner */}
@@ -711,7 +772,7 @@ function MatchesScreen({
                       <>
                         <img
                           src={originalPreviewUrl}
-                          alt="Your X-ray"
+                          alt="Your uploaded image"
                           className="w-full h-full object-contain bg-black/5"
                           onLoad={(event) => setCurrentImageSize({
                             src: originalPreviewUrl,
@@ -749,7 +810,7 @@ function MatchesScreen({
                       <>
                         <img
                           src={selected.image_url}
-                          alt="Matched X-ray"
+                          alt="Twin case image"
                           className="w-full h-full object-contain bg-black/5"
                           onLoad={(event) => setHistoricalImageSize({
                             src: selected.image_url,
@@ -779,6 +840,8 @@ function MatchesScreen({
                 </div>
               </div>
             </div>
+
+            <TwinStory item={selected} />
 
             {/* Streaming Single AI Insight */}
             {showInsights && (
@@ -811,8 +874,10 @@ function MatchesScreen({
                             prose-li:text-zinc-700 prose-ul:my-2 prose-li:my-1">
                           <ReactMarkdown>{insights.insights_text}</ReactMarkdown>
                           <p className="text-xs text-zinc-500">
-                            AI-generated visual context. Check it against both images and the historical case description.
-                            {(insights.original_box || insights.match_box) && " Boxes show suggested regions."}
+                            AI-generated visual context: each image was read separately by MedGemma, then the reads were compared.
+                            Sides (left/right) are left out because the model often confuses them on published figures;
+                            {(insights.original_box || insights.match_box) ? " the boxes from MedGemma 1.5 show where each finding is." : " check location on the images."}
+                            {" "}Check it against both images and the published caption.
                           </p>
                         </div>
                       ) : (
@@ -888,29 +953,25 @@ function MatchesScreen({
                     <tr className="hover:bg-zinc-50/50 transition-colors">
                       <td className="py-3 px-4 text-zinc-600 font-medium">Imaging Findings</td>
                       <td className="py-3 px-4 border-l border-zinc-200/80 text-zinc-700">
-                        <div className="flex flex-col gap-1 text-[13px]">
-                          {originalProfile?.findings.lungs.consolidation_present === "yes" && <span>• Consolidation </span>}
-                          {originalProfile?.findings.lungs.edema_present === "yes" && <span>• Edema </span>}
-                          {originalProfile?.findings.pleura.effusion_present === "yes" && <span>• Pleural Effusion </span>}
-                          {(!originalProfile?.findings.lungs.consolidation_present && !originalProfile?.findings.lungs.edema_present && !originalProfile?.findings.pleura.effusion_present) && <span className="text-zinc-400 italic">No structured findings extracted.</span>}
-                        </div>
+                        <FindingList items={originalProfile?.findings.imaging_findings ?? []} empty="No imaging findings extracted." />
                       </td>
                       <td className="py-3 px-4 border-l border-zinc-200/80 text-zinc-700">
-                        <div className="flex flex-col gap-1 text-[13px]">
-                          {selected.raw_payload?.findings?.lungs?.consolidation_present === "yes" && <span>• Lung Consolidation</span>}
-                          {selected.raw_payload?.findings?.lungs?.edema_present === "yes" && <span>• Pulmonary Edema</span>}
-                          {selected.raw_payload?.findings?.lungs?.atelectasis_present === "yes" && <span>• Atelectasis</span>}
-                          {selected.raw_payload?.findings?.pleura?.effusion_present === "yes" && <span>• Pleural Effusion</span>}
-                          {selected.raw_payload?.findings?.pleura?.pneumothorax_present === "yes" && <span>• Pneumothorax</span>}
-                          {selected.raw_payload?.findings?.cardiomediastinal?.cardiomegaly === "yes" && <span>• Cardiomegaly</span>}
-                          {(!selected.raw_payload?.findings || Object.keys(selected.raw_payload.findings).length === 0) && (
-                            <span className="text-zinc-400 italic">Review clinical literature</span>
-                          )}
-                        </div>
+                        <FindingList items={selected.imaging_findings ?? []} empty="Not reported in the case." />
                       </td>
                     </tr>
 
-                    {/* Row 4: Evidence Base */}
+                    {/* Row 4: Comorbidities */}
+                    <tr className="hover:bg-zinc-50/50 transition-colors">
+                      <td className="py-3 px-4 text-zinc-600 font-medium">Comorbidities</td>
+                      <td className="py-3 px-4 border-l border-zinc-200/80 text-zinc-700 text-[13px]">
+                        {originalProfile?.patient.comorbidities.join(", ") || <span className="text-zinc-400 italic">None recorded</span>}
+                      </td>
+                      <td className="py-3 px-4 border-l border-zinc-200/80 text-zinc-700 text-[13px]">
+                        {(selected.raw_payload?.patient?.comorbidities ?? []).join(", ") || <span className="text-zinc-400 italic">None recorded</span>}
+                      </td>
+                    </tr>
+
+                    {/* Row 5: Evidence Base */}
                     <tr className="hover:bg-zinc-50/50 transition-colors">
                       <td className="py-3 px-4 text-zinc-600 font-medium">Evidence Base</td>
                       <td className="py-3 px-4 border-l border-zinc-200/80 text-zinc-400 text-sm">
@@ -922,12 +983,13 @@ function MatchesScreen({
                           <span className="font-medium text-zinc-600 max-w-full truncate">{selected.facility}</span>
                           <div className="flex flex-wrap items-center gap-x-2 text-xs text-zinc-500 mt-1">
                             {selected.pmc_id && (
-                              <a href={selected.raw_payload?.provenance?.source_url || `https://www.ncbi.nlm.nih.gov/pmc/articles/${selected.pmc_id}`} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
+                              <a href={selected.source_url || `https://pmc.ncbi.nlm.nih.gov/articles/${selected.pmc_id}/`} target="_blank" rel="noreferrer" className="text-blue-600 hover:underline">
                                 {selected.pmc_id}
                               </a>
                             )}
                             {selected.journal && <span className="truncate max-w-[120px]">• {selected.journal}</span>}
                             {selected.year && <span>• {selected.year}</span>}
+                            {selected.license && <span>• {selected.license}</span>}
                           </div>
                         </div>
                       </td>
@@ -939,7 +1001,7 @@ function MatchesScreen({
 
             </div>
 
-          </div>
+          </SelectionExplainPopover>
           {/* Chat FAB */}
           <button
             onClick={() => setShowTwinChat(true)}
@@ -1690,9 +1752,16 @@ function MemoScreen({ selectedMatch, selectedHospital, requiredEquipment }: Memo
   );
 }
 
+function searchKey(profile: CaseProfile | null, file: File | null): string {
+  const { image_url: _imageUrl, ...study } = profile?.study ?? ({} as CaseProfile["study"]);
+  return JSON.stringify([profile ? { ...profile, study } : null, file ? [file.name, file.size, file.lastModified] : null]);
+}
+
 export function DashboardPage() {
-  const [step, setStep] = useState<Step>(0);
-  const [selectedMatch, setSelectedMatch] = useState<number | null>(null);
+  const step = useDashboardStore(s => s.step);
+  const setStep = useDashboardStore(s => s.setStep);
+  const selectedMatch = useDashboardStore(s => s.selectedMatch);
+  const setSelectedMatch = useDashboardStore(s => s.setSelectedMatch);
   const [deIdentify, setDeIdentify] = useState(true);
   const [saveToHistory, setSaveToHistory] = useState(true);
   const [maxTravelTime, setMaxTravelTime] = useState(3);
@@ -1704,10 +1773,15 @@ export function DashboardPage() {
     "Pediatric ICU": false,
     "3T MRI": true
   });
-  const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [matchResults, setMatchResults] = useState<MatchItem[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
-  const [searchError, setSearchError] = useState<string | null>(null);
+  const uploadedFile = useDashboardStore(s => s.uploadedFile);
+  const setUploadedFile = useDashboardStore(s => s.setUploadedFile);
+  const matchResults = useDashboardStore(s => s.matchResults);
+  const searchMeta = useDashboardStore(s => s.searchMeta);
+  const isSearching = useDashboardStore(s => s.isSearching);
+  const searchError = useDashboardStore(s => s.searchError);
+  const setSearchState = useDashboardStore(s => s.setSearchState);
+  const profile = useDashboardStore(s => s.profile);
+  const addTrace = useDashboardStore(s => s.addTrace);
 
   const [routeCenters, setRouteCenters] = useState<RouteCenter[]>([]);
   const [isRouting, setIsRouting] = useState(false);
@@ -1757,6 +1831,22 @@ export function DashboardPage() {
     }
   };
 
+  const runSearch = async () => {
+    const { profile: profileData, uploadedFile: file } = useDashboardStore.getState();
+    setSearchState({ isSearching: true, searchError: null, selectedMatch: null });
+    try {
+      // The image is optional: without one, the backend matches on the case report
+      // (text embeddings + reranker) and MedSigLIP's text-to-image space.
+      const { matches, ...meta } = await searchTwins(file, profileData);
+      setSearchState({ matchResults: matches, searchMeta: meta, lastSearchKey: searchKey(profileData, file) });
+      addTrace("Twin search", meta.trace);
+    } catch (err) {
+      setSearchState({ matchResults: [], searchMeta: null, searchError: err instanceof Error ? err.message : "Search failed" });
+    } finally {
+      setSearchState({ isSearching: false });
+    }
+  };
+
   const handleStepChange = async (next: Step) => {
     const profileData = useDashboardStore.getState().profile;
     if (
@@ -1767,28 +1857,10 @@ export function DashboardPage() {
       return;
     }
 
-    // When advancing to the Matches step (1), trigger real search
-    if (next === 1 && matchResults.length === 0) {
+    // When advancing to the Matches step (1), search again if the case changed
+    if (next === 1 && searchKey(profileData, uploadedFile) !== useDashboardStore.getState().lastSearchKey) {
       setStep(next);
-      setIsSearching(true);
-      setSearchError(null);
-      try {
-        let fileToSearch = uploadedFile;
-        if (!fileToSearch) {
-          // Fallback dummy 1x1 image so backend receives a valid file
-          const dummyImg = new Blob([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13, 73, 72, 68, 82, 0, 0, 0, 1, 0, 0, 0, 1, 8, 6, 0, 0, 0, 31, 21, 196, 137, 0, 0, 0, 11, 73, 68, 65, 84, 8, 153, 99, 248, 15, 4, 0, 9, 251, 3, 253, 153, 226, 18, 172, 0, 0, 0, 0, 73, 69, 78, 68, 174, 66, 96, 130])], { type: 'image/png' });
-          fileToSearch = new File([dummyImg], "dummy.png", { type: "image/png" });
-        }
-
-        const results = await searchByImage(fileToSearch, profileData || undefined);
-        console.log("FULL MATCHED DATA:", results);
-        setMatchResults(results);
-      } catch (err) {
-        setSearchError(err instanceof Error ? err.message : "Search failed");
-      } finally {
-        setIsSearching(false);
-      }
-    } else if (next === 2 && routeCenters.length === 0) {
+      await runSearch();    } else if (next === 2 && routeCenters.length === 0) {
       setStep(next);
       await fetchRoute();
     } else {
@@ -1837,7 +1909,9 @@ export function DashboardPage() {
               items={matchResults}
               isLoading={isSearching}
               originalFile={uploadedFile}
-              originalProfile={useDashboardStore.getState().profile}
+              originalProfile={profile}
+              searchMeta={searchMeta}
+              onRefresh={runSearch}
             />
           </>
         ) : null}
@@ -1878,6 +1952,7 @@ export function DashboardPage() {
         ) : null}
       </main>
 
+      <AiPipelinePanel />
     </div>
   );
 }

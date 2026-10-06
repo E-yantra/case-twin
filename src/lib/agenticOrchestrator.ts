@@ -3,14 +3,11 @@ import { emptyProfile } from "./caseProfileTypes";
 import {
     extractCaseProfile,
     computeProfileConfidence,
+    mergeProfiles,
     PROFILE_READY_THRESHOLD,
 } from "./caseProfileUtils";
-import {
-    generateAgenticFollowup,
-    getTargetedQuestion,
-    patchProfileFromAnswer,
-    summarizePatch,
-} from "./agenticCopilot";
+import { generateAgenticFollowup, summarizePatch } from "./agenticCopilot";
+import type { AiTraceStep } from "./twinApi";
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 
@@ -51,6 +48,14 @@ export interface OrchestratorState {
     /** The field label we are currently questioning about */
     currentQuestion: string | null;
     readyToProceed: boolean;
+    /** Every clinician note so far; each turn re-extracts from the full record. */
+    notesSoFar: string;
+    /**
+     * Checklist fields the clinician already answered with nothing to record
+     * ("no comorbidities", "unknown"). They stay empty in the profile, so without
+     * this list the same follow-up question would repeat forever.
+     */
+    answeredFields: string[];
 }
 
 // ─── Constants ─────────────────────────────────────────────────────────────
@@ -83,6 +88,8 @@ export function createInitialState(): OrchestratorState {
         ],
         currentQuestion: null,
         readyToProceed: false,
+        notesSoFar: "",
+        answeredFields: [],
     };
 }
 
@@ -96,6 +103,8 @@ export interface ProcessTurnInput {
 
 export interface ProcessTurnOutput {
     newState: OrchestratorState;
+    /** Model steps that ran this turn, for the AI pipeline panel. */
+    trace: AiTraceStep[];
 }
 
 export async function processIntakeTurn(input: ProcessTurnInput): Promise<ProcessTurnOutput> {
@@ -130,19 +139,36 @@ export async function processIntakeTurn(input: ProcessTurnInput): Promise<Proces
 
     if (!hasInput) {
         // Nothing to process — return state unchanged
-        return { newState: currentState };
+        return { newState: currentState, trace: [] };
     }
 
     const images = files.filter(f => f.type === "image/jpeg" || f.type === "image/png" || f.type === "image/webp");
     const docs = files.filter(f => !images.includes(f));
     const notesFile = docs[0] ?? null;
 
+    // Gemma 4 sees the whole record each turn, so a short answer ("he smokes")
+    // is interpreted in context instead of in isolation.
+    const notesSoFar = [currentState.notesSoFar, userText.trim()].filter(Boolean).join("\n");
     let newProfile: CaseProfile;
+    let trace: AiTraceStep[] = [];
+    let method = "";
     try {
-        newProfile = await extractCaseProfile(images, userText, notesFile);
-    } catch {
-        // Backend offline or error — keep previous profile so we never get stuck
-        newProfile = prevProfile;
+        const result = await extractCaseProfile(images, notesSoFar, notesFile);
+        newProfile = result.profile;
+        trace = result.trace;
+        method = result.method;
+    } catch (error) {
+        // Keep the previous profile and say exactly what failed.
+        const reason = error instanceof Error ? error.message : "The extraction service is unavailable.";
+        return {
+            newState: {
+                ...currentState,
+                notesSoFar,
+                messages: [...currentState.messages, userMessage,
+                    assistantMsg(`I couldn't build the case report: ${reason}\n\nYour notes are kept; send another message to retry.`)],
+            },
+            trace: [],
+        };
     }
 
     // Merge with existing profile (keep already-captured fields)
@@ -158,7 +184,14 @@ export async function processIntakeTurn(input: ProcessTurnInput): Promise<Proces
     const expandedFields = diffExtraFields(prevProfile.extra_fields ?? {}, mergedProfile.extra_fields ?? {});
 
     // Build assistant response
-    const followup = generateAgenticFollowup(mergedProfile, conf.score);
+    // The clinician replied to the last question but the field is still empty:
+    // that is an answer ("none" / "not known"), so do not ask it again.
+    const answeredFields = [...(currentState.answeredFields ?? [])];
+    const asked = currentState.currentQuestion;
+    if (asked && userText.trim() && !answeredFields.includes(asked) && !hasValue(mergedProfile, asked)) {
+        answeredFields.push(asked);
+    }
+    const followup = generateAgenticFollowup(mergedProfile, conf.score, answeredFields);
     const patchSummary = patchedFields.length > 0
         ? summarizePatch(patchedFields)
         : null;
@@ -166,7 +199,11 @@ export async function processIntakeTurn(input: ProcessTurnInput): Promise<Proces
         ? `✓ Extended — captured: ${expandedFields.join(", ")}.`
         : null;
 
+    const methodNote = method === "regex-fallback"
+        ? "⚠ Gemma 4 was unreachable, so a basic keyword extractor filled this profile. Check it carefully."
+        : null;
     const assistantContent = [
+        methodNote,
         patchSummary ?? expandSummary,
         followup.message,
     ].filter(Boolean).join("\n\n");
@@ -212,11 +249,21 @@ export async function processIntakeTurn(input: ProcessTurnInput): Promise<Proces
             phase: nextPhase,
             messages: [...currentState.messages, ...allMessages],
             currentQuestion: followup.priority_fields[0] ?? null,
+            answeredFields,
             readyToProceed: conf.score >= PROFILE_READY_THRESHOLD,
-        }
+            notesSoFar,
+        },
+        trace,
     };
 }
 
+
+/** True when the profile has a non-empty value at a dotted path such as "patient.comorbidities". */
+function hasValue(profile: CaseProfile, path: string): boolean {
+    const value = path.split(".").reduce<unknown>(
+        (node, key) => (node && typeof node === "object" ? (node as Record<string, unknown>)[key] : undefined), profile);
+    return !(value === null || value === undefined || value === "" || (Array.isArray(value) && value.length === 0));
+}
 
 // ─── Profile Diff ──────────────────────────────────────────────────────────
 
@@ -249,6 +296,9 @@ function diffProfileFields(prev: CaseProfile, next: CaseProfile): string[] {
     check("Urgency", prev.assessment.urgency, next.assessment.urgency);
     check("Differential", prev.assessment.differential, next.assessment.differential);
     check("Summary", prev.summary.one_liner, next.summary.one_liner);
+    check("Imaging findings", prev.findings.imaging_findings, next.findings.imaging_findings);
+    check("Lab findings", prev.findings.lab_findings, next.findings.lab_findings);
+    check("Red flags", prev.summary.red_flags, next.summary.red_flags);
 
     return changed;
 }
@@ -266,70 +316,6 @@ function diffExtraFields(
         }
     }
     return changed;
-}
-
-// ─── Profile Merge ─────────────────────────────────────────────────────────
-
-/** Merge two profiles: keep truthy values, prefer `next` for filled fields */
-export function mergeProfiles(base: CaseProfile, next: CaseProfile): CaseProfile {
-    const pick = <T>(a: T, b: T): T => {
-        const isEmpty = (v: unknown) =>
-            v === null || v === undefined || v === "" || (Array.isArray(v) && (v as unknown[]).length === 0);
-        return isEmpty(b) ? a : b;
-    };
-
-    // Merge extra_fields: union of both, next wins on conflicts
-    const mergedExtra: Record<string, string | string[]> = {
-        ...(base.extra_fields ?? {}),
-        ...(next.extra_fields ?? {}),
-    };
-
-    return {
-        ...next,
-        profile_id: next.profile_id || base.profile_id,
-        case_id: next.case_id || base.case_id,
-        image_id: next.image_id || base.image_id,
-        patient: {
-            age_years: pick(base.patient.age_years, next.patient.age_years),
-            sex: pick(base.patient.sex, next.patient.sex),
-            immunocompromised: pick(base.patient.immunocompromised, next.patient.immunocompromised),
-            weight_kg: pick(base.patient.weight_kg, next.patient.weight_kg),
-            comorbidities: pick(base.patient.comorbidities, next.patient.comorbidities),
-            medications: pick(base.patient.medications, next.patient.medications),
-            allergies: pick(base.patient.allergies, next.patient.allergies),
-        },
-        presentation: {
-            chief_complaint: pick(base.presentation.chief_complaint, next.presentation.chief_complaint),
-            symptom_duration: pick(base.presentation.symptom_duration, next.presentation.symptom_duration),
-            hpi: pick(base.presentation.hpi, next.presentation.hpi),
-            pmh: pick(base.presentation.pmh, next.presentation.pmh),
-        },
-        study: {
-            modality: pick(base.study.modality, next.study.modality),
-            body_region: pick(base.study.body_region, next.study.body_region),
-            view_position: pick(base.study.view_position, next.study.view_position),
-            radiology_region: pick(base.study.radiology_region, next.study.radiology_region),
-            caption: pick(base.study.caption, next.study.caption),
-            image_type: pick(base.study.image_type, next.study.image_type),
-            image_subtype: pick(base.study.image_subtype, next.study.image_subtype),
-            image_url: pick(base.study.image_url, next.study.image_url),
-            storage_path: pick(base.study.storage_path, next.study.storage_path),
-        },
-        assessment: {
-            diagnosis_primary: pick(base.assessment.diagnosis_primary, next.assessment.diagnosis_primary),
-            suspected_primary: pick(base.assessment.suspected_primary, next.assessment.suspected_primary),
-            differential: pick(base.assessment.differential, next.assessment.differential),
-            urgency: pick(base.assessment.urgency, next.assessment.urgency),
-            infectious_concern: pick(base.assessment.infectious_concern, next.assessment.infectious_concern),
-            icu_candidate: pick(base.assessment.icu_candidate, next.assessment.icu_candidate),
-        },
-        summary: {
-            one_liner: pick(base.summary.one_liner, next.summary.one_liner),
-            key_points: pick(base.summary.key_points, next.summary.key_points),
-            red_flags: pick(base.summary.red_flags, next.summary.red_flags),
-        },
-        extra_fields: mergedExtra,
-    };
 }
 
 // ─── Utility ───────────────────────────────────────────────────────────────

@@ -2,9 +2,10 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { Send, Activity, User, Loader2, FileText, X, ChevronRight } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import { cn } from "@/lib/utils";
-import { type MatchItem } from "@/lib/mockUploadApis";
+import { type MatchItem } from "@/lib/twinApi";
 import { API_BASE } from "@/lib/api";
 import type { CaseProfile } from "@/lib/caseProfileTypes";
+import { useDashboardStore } from "@/store/dashboardStore";
 
 interface ChatMessage {
     role: "user" | "assistant";
@@ -34,6 +35,7 @@ export function TwinChatPanel({ isOpen, onClose, match, currentProfile }: TwinCh
     const [isLoading, setIsLoading] = useState(false);
     const endRef = useRef<HTMLDivElement>(null);
     const inputRef = useRef<HTMLTextAreaElement>(null);
+    const addTrace = useDashboardStore(s => s.addTrace);
 
     // Resizable panel
     const [width, setWidth] = useState(440);
@@ -63,7 +65,7 @@ export function TwinChatPanel({ isOpen, onClose, match, currentProfile }: TwinCh
     useEffect(() => {
         if (isOpen && match && messages.length === 0) {
             const twinDx = match.diagnosis || "the historical case";
-            const twinOutcome = match.outcome ? ` (${match.outcome} outcome)` : "";
+            const twinOutcome = match.outcome && match.outcome !== "Outcome not reported" ? ` (outcome: ${match.outcome.slice(0, 120)})` : "";
             const twinFacility = match.facility ? ` from ${match.facility}` : "";
 
             let currentCtx = "";
@@ -81,12 +83,12 @@ export function TwinChatPanel({ isOpen, onClose, match, currentProfile }: TwinCh
                 content: `I have context on **${twinDx}**${twinOutcome}${twinFacility}${currentCtx}.\n\nAsk me anything about treatment, findings, outcomes, or how the two cases compare.`
             }]);
         }
-    }, [isOpen, match]);
+    }, [isOpen, match, currentProfile, messages.length]);
 
-    // Reset on new match
+    // Reset on a new twin (several twins can come from one article, so key on the point id)
     useEffect(() => {
         setMessages([]);
-    }, [match?.pmc_id]);
+    }, [match?.id]);
 
     useEffect(() => {
         endRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -106,6 +108,8 @@ export function TwinChatPanel({ isOpen, onClose, match, currentProfile }: TwinCh
         if (!userMsg || isLoading) return;
 
         setInput("");
+        // Prior turns (minus the canned greeting) give MedGemma conversational memory.
+        const history = messages.slice(1);
         setMessages(prev => [...prev, { role: "user", content: userMsg }]);
         setIsLoading(true);
 
@@ -116,15 +120,20 @@ export function TwinChatPanel({ isOpen, onClose, match, currentProfile }: TwinCh
             if (currentProfile) {
                 fd.append("current_profile", JSON.stringify(currentProfile));
             }
+            if (match.raw_payload) {
+                fd.append("twin_profile", JSON.stringify(match.raw_payload));
+            }
+            fd.append("history", JSON.stringify(history));
 
             const res = await fetch(`${BACKEND}/chat_twin`, { method: "POST", body: fd });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
             setMessages(prev => [...prev, { role: "assistant", content: data.reply }]);
-        } catch {
+            if (data.trace) addTrace("Twin chat", data.trace);
+        } catch (error) {
             setMessages(prev => [...prev, {
                 role: "assistant",
-                content: "I couldn't connect to the reasoning engine right now. Please try again."
+                content: `I couldn't get an answer from MedGemma: ${error instanceof Error ? error.message : "unknown error"}. Please try again.`
             }]);
         } finally {
             setIsLoading(false);

@@ -1,8 +1,15 @@
 """
 CaseTwin FastAPI backend.
-POST /search   — upload a chest X-ray image, get back similar cases from Qdrant.
-POST /extract  — extract a structured CaseProfile from images + clinical notes (mock).
-GET  /health   — health check.
+POST /extract            — Gemma 4 + MedGemma: unstructured notes and images -> structured case report.
+POST /search             — MedSigLIP + Qwen3 + bge-reranker hybrid twin-case retrieval from Qdrant.
+POST /compare_insights   — MedGemma 1.5 side-by-side image comparison (+ CXR finding boxes).
+POST /chat_twin          — MedGemma answers questions grounded in the twin and current case.
+POST /explain_selection  — MedGemma explains a highlighted medical term.
+POST /enhance_profile    — MedGemma clinical synthesis of the current case.
+GET  /health, /ai_status — health and model availability.
+
+Every AI endpoint returns a ``trace``: which model did which step and how long it took,
+so the UI can show the pipeline.
 """
 
 import os
@@ -22,12 +29,21 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 
+import asyncio
+import time
+
 from embedding_service import (
     generate_embedding, query_medgemma,
-    query_medgemma_comparison, query_medgemma_localization,
+    query_medgemma_localization, query_medgemma_read,
 )
-from qdrant_service import search_similar
-from manifest import asset_path
+from local_ai import (
+    GEMMA_MODEL, MEDGEMMA_COMPARISON_MODEL, MEDGEMMA_LOCALIZATION_MODEL, MEDGEMMA_MODEL, medsiglip_classify,
+    medsiglip_text_embedding, query_text, rerank, text_embeddings,
+)
+from collections_config import COLLECTIONS, quality_labels
+from extraction import extract_profile, intake_prompt
+from qdrant_service import COLLECTION_NAME, search_similar
+from manifest import asset_path, case_document, empty_profile, merge_profile, normalize_profile
 from document_text import DocumentExtractionError, extract_document_text
 
 app = FastAPI(title="CaseTwin API", version="1.0.0")
@@ -48,6 +64,44 @@ def health():
     return {"status": "ok"}
 
 
+MODEL_ROLES = [
+    {"id": GEMMA_MODEL, "role": "Turns unstructured notes into the structured case report (JSON schema)"},
+    {"id": MEDGEMMA_MODEL, "role": "Reads and compares images, explains terms, synthesises and answers questions about cases"},
+    {"id": MEDGEMMA_LOCALIZATION_MODEL, "role": "Localises chest X-ray findings (bounding boxes)"},
+    {"id": "MedSigLIP", "role": "Image embeddings for visual search; zero-shot image-type routing; text-to-image search"},
+    {"id": "qwen3-embedding-8b", "role": "Text embeddings of case reports for semantic search"},
+    {"id": "bge-reranker-v2-m3", "role": "Cross-encoder reranking of the top candidate twins"},
+]
+
+
+@app.get("/ai_status")
+async def ai_status():
+    """Which local models and stores are reachable right now."""
+    import httpx
+    from local_ai import GATEWAY_BASE_URL, MEDSIGLIP_BASE_URL, _gateway_headers
+    available: set[str] = set()
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            response = await client.get(f"{GATEWAY_BASE_URL}/models", headers=_gateway_headers())
+            available = {model["id"] for model in response.json().get("data", [])}
+    except Exception:
+        logger.warning("Gateway model list unavailable")
+    try:
+        async with httpx.AsyncClient(timeout=5) as client:
+            if (await client.get(f"{MEDSIGLIP_BASE_URL}/health")).status_code == 200:
+                available.add("MedSigLIP")
+    except Exception:
+        logger.warning("MedSigLIP health check failed")
+    try:
+        from qdrant_service import _get_client
+        info = await asyncio.to_thread(_get_client().get_collection, COLLECTION_NAME)
+        library = {"collection": COLLECTION_NAME, "points": info.points_count}
+    except Exception:
+        library = {"collection": COLLECTION_NAME, "points": 0}
+    return {"models": [{**model, "available": model["id"] in available} for model in MODEL_ROLES],
+            "library": library}
+
+
 @app.get("/dataset-images/{asset_id}")
 def dataset_image(asset_id: str):
     """Serve a derived asset by safe identifier; source paths never leave the backend."""
@@ -64,49 +118,124 @@ def _dataset_url(request: Request, asset_id: str | None) -> str | None:
     return str(request.url_for("dataset_image", asset_id=asset_id)) if asset_id else None
 
 
+def _step(model: str, task: str, started: float, **extra) -> dict:
+    return {"model": model, "task": task, "ms": round((time.perf_counter() - started) * 1000), **extra}
+
+
+ROUTING_MARGIN = 1.5
+
+
+def _route_collection(image: Image.Image) -> tuple[str | None, list[dict]]:
+    """MedSigLIP zero-shot: which twin collection does this image belong to?
+
+    Distractor labels (charts, endoscopy, ECG…) let the model say "none of these";
+    then the search runs across every collection instead of forcing a wrong one.
+    """
+    labels = {spec["zero_shot"]: name for name, spec in COLLECTIONS.items()}
+    ranked = medsiglip_classify(image, quality_labels())
+    scores = [{"collection": labels.get(item["label"]),
+               "label": COLLECTIONS[labels[item["label"]]]["label"] if item["label"] in labels else item["label"],
+               "score": round(float(item["score"]), 8)} for item in ranked[:4]]
+    best_collection = next((item for item in ranked if item["label"] in labels), None)
+    # A distractor must clearly win (> ROUTING_MARGIN x) to override a library type;
+    # near-ties (a real CXR scoring like "fluoroscopy") still route to the collection.
+    if best_collection and ranked[0]["score"] <= ROUTING_MARGIN * best_collection["score"]:
+        chosen = labels[best_collection["label"]]
+        scores.sort(key=lambda item: item["collection"] != chosen)
+        return chosen, scores
+    return None, scores
+
+
+def _crossmodal_text(profile: dict) -> str:
+    """Short image-like description for MedSigLIP's text tower (it is trained on captions; max 64 tokens)."""
+    study, findings = profile.get("study", {}), profile.get("findings", {})
+    parts = [study.get("modality"), study.get("body_region"), "; ".join(findings.get("imaging_findings") or []),
+             profile.get("assessment", {}).get("diagnosis_primary")]
+    return " ".join(str(part) for part in parts if part)[:400]
+
+
+@app.get("/collections")
+def list_collections():
+    return {"collections": [{"id": name, "label": spec["label"], "modality": spec["modality"]}
+                            for name, spec in COLLECTIONS.items()]}
+
+
 @app.post("/search")
 async def search(
     request: Request,
-    file: UploadFile = File(...),
+    file: Optional[UploadFile] = File(None),
     profile: Optional[str] = Form(None),
+    collection: Optional[str] = Form("auto"),
     limit: int = 10
 ):
     """
-    Accept a chest X-ray image, generate a MedSiglip embedding,
-    and return the top `limit` similar cases from Qdrant, re-ranked
-    using the extracted CaseProfile.
+    Hybrid twin search. The image (MedSigLIP) and the structured case report
+    (Qwen3 embeddings + bge reranker) are both used when available; with only a
+    report, MedSigLIP's text tower searches the image space cross-modally.
     """
-    if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
-        raise HTTPException(status_code=400, detail="Only image files are accepted (jpg, png, webp).")
-
-    try:
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Could not read image: {e}")
+    trace: list[dict] = []
+    image = None
+    if file is not None and file.filename:
+        if file.content_type not in ("image/jpeg", "image/png", "image/webp"):
+            raise HTTPException(status_code=400, detail="Only image files are accepted (jpg, png, webp).")
+        try:
+            image = Image.open(io.BytesIO(await file.read())).convert("RGB")
+        except Exception as e:
+            raise HTTPException(status_code=400, detail=f"Could not read image: {e}")
 
     parsed_profile = None
     if profile:
         try:
-            parsed_profile = json.loads(profile)
+            parsed_profile = normalize_profile(json.loads(profile))
         except Exception as e:
-            print(f"Warning: Failed to parse profile JSON: {e}")
+            raise HTTPException(status_code=400, detail=f"Profile is not valid JSON: {e}")
+    query_document = case_document(parsed_profile) if parsed_profile else ""
+    if image is None and len(query_document) < 20:
+        raise HTTPException(status_code=400, detail="Upload an image or build a case profile before searching.")
+
+    routing = None
+    chosen = collection if collection in COLLECTIONS else None
+    image_vector = crossmodal_vector = text_vector = None
+    try:
+        if image is not None:
+            started = time.perf_counter()
+            image_vector = await asyncio.to_thread(generate_embedding, image)
+            trace.append(_step("MedSigLIP", "Embed uploaded image (1152-d)", started))
+            if collection in (None, "", "auto"):
+                started = time.perf_counter()
+                chosen, scores = await asyncio.to_thread(_route_collection, image)
+                routing = {"collection": chosen, "scores": scores}
+                trace.append(_step("MedSigLIP", f"Zero-shot image type: {scores[0]['label']}"
+                                   + ("" if chosen else " (not a library type; searching all collections)"), started))
+        if query_document:
+            started = time.perf_counter()
+            text_vector = (await asyncio.to_thread(text_embeddings, [query_document], query=True))[0]
+            trace.append(_step("qwen3-embedding-8b", "Embed structured case report (4096-d)", started))
+    except Exception as e:
+        logger.exception("Embedding failed")
+        raise HTTPException(status_code=503, detail=f"A local embedding model is unavailable: {e}")
+    if image is None and parsed_profile and _crossmodal_text(parsed_profile):
+        # Cross-modal is a minor extra signal: if it fails, search on the report text alone.
+        started = time.perf_counter()
+        try:
+            crossmodal_vector = await asyncio.to_thread(medsiglip_text_embedding, _crossmodal_text(parsed_profile))
+            trace.append(_step("MedSigLIP", "Embed findings text into the image space (cross-modal)", started))
+        except Exception as e:
+            logger.warning("Cross-modal embedding skipped: %s", e)
+            trace.append(_step("MedSigLIP", "Cross-modal search skipped (text encoder unavailable)", started))
+    if not (image_vector or text_vector or crossmodal_vector):
+        raise HTTPException(status_code=503, detail="No embedding could be computed for this case.")
 
     try:
-        embedding = generate_embedding(image)
+        matches, search_trace = await asyncio.to_thread(
+            search_similar, image_vector=image_vector, crossmodal_vector=crossmodal_vector,
+            text_vector=text_vector, query_document=query_document, collection=chosen,
+            limit=limit, reranker=rerank,
+        )
     except Exception as e:
-        err_str = str(e)
-        if "503" in err_str or "Service Unavailable" in err_str:
-            raise HTTPException(
-                status_code=503, 
-                detail="The AI image matching model is currently waking up or unavailable. Please try again in about 1-2 minutes."
-            )
-        raise HTTPException(status_code=500, detail=f"Embedding generation failed: {e}")
-
-    try:
-        matches = search_similar(embedding, profile_data=parsed_profile, limit=limit)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Qdrant search failed: {e}")
+        logger.exception("Qdrant search failed")
+        raise HTTPException(status_code=500, detail=f"Twin search failed: {e}")
+    trace.extend(search_trace)
 
     for match in matches:
         match["image_url"] = _dataset_url(request, match.get("asset_id"))
@@ -118,7 +247,7 @@ async def search(
             for related, url in zip(payload.get("related_images", []), match["related_image_urls"]):
                 if isinstance(related, dict):
                     related["image_url"] = url
-    return {"matches": matches, "count": len(matches)}
+    return {"matches": matches, "count": len(matches), "collection": chosen, "routing": routing, "trace": trace}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -246,6 +375,73 @@ def _localization_prompt(finding: str) -> str:
     )
 
 
+def _read_prompt(kind: str) -> str:
+    """Dictation-style read (finds abnormalities more reliably than a prose findings section).
+
+    MedGemma confuses the patient's left and right on published figures (it tends to
+    report the viewer's side), so reads describe position without sides; the CXR
+    finding boxes, which MedGemma 1.5 localises correctly, show where a finding is.
+    """
+    if kind == "chest radiograph":
+        return (
+            "Describe the key findings visible in this chest radiograph as a short list, the way a radiologist "
+            "would dictate them. Do not say left or right; describe position only as upper, middle or lower "
+            "zone, and central or peripheral. Mention notable normal findings only if relevant. If a feature is "
+            "unclear, say so. Do not give a final diagnosis. Do not mention captions, arrows or marks, chronology, "
+            "treatment, prognosis or outcome. Maximum 60 words."
+        )
+    return (
+        f"Describe the key findings visible in this {kind} as a short list, the way a specialist would dictate "
+        "them. If a feature is unclear, say so. Do not give a final diagnosis. Do not mention captions, arrows "
+        "or marks, chronology, treatment, prognosis or outcome. Maximum 60 words."
+    )
+
+
+def _strip_preamble(text: str) -> str:
+    """Drop an opening line such as "Here's a description of the findings:"."""
+    lines = [line for line in text.strip().split("\n") if line.strip()]
+    while lines and (lines[0].rstrip().endswith(":") or re.match(r"^(?:here(?:'s| is| are)|sure|okay)\b", lines[0], re.I)):
+        lines.pop(0)
+    return " ".join(" ".join(lines).split())
+
+
+async def _independent_comparison(current: Image.Image, historical: Image.Image, kind: str) -> tuple[str, str, str]:
+    prompt = _read_prompt(kind)
+    reads = await asyncio.gather(
+        asyncio.to_thread(query_medgemma_read, current, prompt),
+        asyncio.to_thread(query_medgemma_read, historical, prompt),
+    )
+    current_read, historical_read = (_strip_preamble(_clean_reply(read[0].get("generated_text", ""))) for read in reads)
+    if not (current_read and historical_read):
+        return current_read, historical_read, ""
+    comparison = await asyncio.to_thread(
+        query_text,
+        "Below are two independent reads of images from two different patients. In one or two short "
+        "sentences, compare only their visible similarities and differences. Do not mention left or right "
+        "sides. Do not suggest that one patient developed the other's findings, and do not mention "
+        "treatment, prognosis or outcome.\n\n"
+        f"Current: {current_read}\nHistorical: {historical_read}",
+        model=MEDGEMMA_COMPARISON_MODEL, max_tokens=160, temperature=0,
+    )
+    return current_read, historical_read, _strip_preamble(_clean_reply(comparison))
+
+
+_FINDINGS_SCHEMA = {"type": "object", "properties": {
+    "current_finding": {"type": ["string", "null"]}, "historical_finding": {"type": ["string", "null"]}},
+    "required": ["current_finding", "historical_finding"]}
+
+
+def _finding_names_from_reads(current_read: str, historical_read: str) -> dict | None:
+    reply = query_text(
+        "For each chest X-ray read below, name the single most important abnormal lung or pleural "
+        "finding that the read states as present (not negated or uncertain), in 1-4 words, or null if "
+        "the read describes no clear abnormality. Return JSON with current_finding and historical_finding."
+        f"\n\nCurrent read: {current_read}\nHistorical read: {historical_read}",
+        model=MEDGEMMA_COMPARISON_MODEL, max_tokens=80, temperature=0, json_schema=_FINDINGS_SCHEMA,
+    )
+    return _model_json(reply)
+
+
 @app.post("/compare_insights")
 async def compare_insights(
     original_image: UploadFile = File(...),
@@ -253,10 +449,18 @@ async def compare_insights(
     match_asset_id: str = Form(None),
     match_payload: str = Form(None),
     match_caption: str = Form(None),
+    match_collection: str = Form(None),
 ):
-    """Compare two images without using the historical record as model context."""
+    """Compare two images without using the historical record as model context.
+
+    MedGemma reads each image in its own call (in parallel), so the second read
+    can never copy the first; a text-only call then compares the two reads.
+    Finding boxes are produced only for chest X-rays, by MedGemma 1.5, whose
+    localization was trained on them.
+    """
     # These legacy form fields remain accepted for clients using the existing API.
     _ = match_payload
+    is_cxr = match_collection in (None, "", "cxr")
     try:
         contents = await original_image.read()
         current_image = Image.open(io.BytesIO(contents)).convert("RGB")
@@ -276,48 +480,22 @@ async def compare_insights(
     except Exception as exc:
         raise HTTPException(status_code=422, detail="Historical match image could not be read") from exc
 
-    prompt = (
-        "These two chest radiographs are from separate patients' cases. "
-        "Image 1 is the current case; image 2 is a historical case from a different "
-        "patient. Describe the visible lung and pleural findings of each image, "
-        "then compare only their visible similarities and differences. Use exactly "
-        "three short labeled lines: Current:, Historical:, Visual comparison:. "
-        "If a feature is unclear, say so. No explanation of how one patient might "
-        "develop the other's findings. Do not mention captions, marks, chronology, "
-        "resolution, treatment, prognosis, or outcome."
-    )
+    kind = "chest radiograph" if is_cxr else COLLECTIONS.get(match_collection, {}).get("label", "medical") + " image"
+    started = time.perf_counter()
     try:
-        import asyncio
-        response = await asyncio.to_thread(
-            query_medgemma_comparison, current_image, historical_image,
-            prompt=prompt, max_tokens=220,
-        )
+        current_read, historical_read, comparison = await _independent_comparison(current_image, historical_image, kind)
     except Exception as exc:
         logger.exception("MedGemma visual comparison failed")
         raise HTTPException(
             status_code=502,
             detail="The local model could not complete the visual comparison. Please retry.",
         ) from exc
-
-    raw = (
-        response[0].get("generated_text")
-        if isinstance(response, list) and response and isinstance(response[0], dict)
-        else None
-    )
-    if not isinstance(raw, str) or not raw.strip():
+    if not (current_read and historical_read and comparison):
         raise HTTPException(
             status_code=502,
             detail="The local model returned no visual comparison. Please retry.",
         )
-    text = raw.strip()
-    if text.startswith(prompt):
-        text = text[len(prompt):].strip()
-    text = re.sub(r"^```(?:markdown)?\s*|```$", "", text, flags=re.IGNORECASE).strip()
-    if not text:
-        raise HTTPException(
-            status_code=502,
-            detail="The local model returned no visual comparison. Please retry.",
-        )
+    text = f"Current: {current_read}\nHistorical: {historical_read}\nVisual comparison: {comparison}"
     if re.search(
         r"\b(?:resolution|resolved|resolving|progression|progressed|follow[- ]up|"
         r"prognos\w*|recover\w*|same patient|before[- ]and[- ]after|outcome)\b",
@@ -327,6 +505,10 @@ async def compare_insights(
             status_code=502,
             detail="The local model returned a comparison that needs review. Please retry.",
         )
+    trace = [_step(MEDGEMMA_COMPARISON_MODEL, "Read each image independently (2 parallel calls), then compare the reads",
+                   started)]
+    if not is_cxr:
+        return {"insights_text": text, "original_box": None, "match_box": None, "trace": trace}
     reported = _reported_finding(match_caption or "")
     if reported and not _positive_mention(_historical_line(text), reported[1]):
         return {
@@ -337,25 +519,13 @@ async def compare_insights(
             ),
             "original_box": None,
             "match_box": None,
+            "trace": trace,
         }
-    # A separate two-image check gates localization. Single-image localization
-    # produced a box on the clear sample image, so its box alone is insufficient.
-    finding_prompt = (
-        "These chest X-rays are from two unrelated patients. Image 1 is current "
-        "and image 2 is historical. Identify only an abnormal lung or pleural "
-        "finding that is directly visible and can be localized in each image. "
-        "Ignore captions and colored marks. If an image has no clearly visible "
-        "abnormality, use null. Return only JSON: "
-        '{"current_finding": string or null, "historical_finding": string or null}. '
-        "Do not infer a past disease from a normal image."
-    )
+    # Finding names come from the two independent reads (text-only), so the
+    # localizer is only asked about findings a read actually states as present.
     boxes = {"original_box": None, "match_box": None}
     try:
-        finding_response = await asyncio.to_thread(
-            query_medgemma_comparison, current_image, historical_image,
-            prompt=finding_prompt, max_tokens=160,
-        )
-        findings = _model_json(finding_response[0]["generated_text"])
+        findings = await asyncio.to_thread(_finding_names_from_reads, current_read, historical_read)
     except Exception:
         logger.exception("MedGemma finding check was unavailable")
         findings = None
@@ -375,7 +545,9 @@ async def compare_insights(
                 except Exception:
                     logger.exception("MedGemma localization was unavailable")
 
-    return {"insights_text": text, **boxes}
+    if any(boxes.values()):
+        trace.append(_step(MEDGEMMA_LOCALIZATION_MODEL, "Localize visible findings (bounding boxes)", started))
+    return {"insights_text": text, **boxes, "trace": trace}
 
 
 # ──────────────────────────────────────────────────────────────────────────────
@@ -684,340 +856,229 @@ async def search_hospitals(
 
 
 # ──────────────────────────────────────────────────────────────────────────────
-# /chat_twin  – Use MedGemma to answer questions about a case twin
+# MedGemma text endpoints: chat, synthesis, term explanation (text-only calls)
 # ──────────────────────────────────────────────────────────────────────────────
+def _clean_reply(reply: str, marker: str | None = None) -> str:
+    """Strip echoed prompt markers, boxed answers and repeated lines from a model reply."""
+    if marker and marker in reply:
+        reply = reply.split(marker)[-1]
+    reply = reply.split("Final Answer")[0]
+    reply = re.sub(r"\\boxed\{([^}]*)\}", r"\1", reply).strip()
+    reply = re.sub(r"^[^\w*#\-]+", "", reply)
+    seen, lines = set(), []
+    for line in (line.strip() for line in reply.split("\n")):
+        key = re.sub(r"\W+", "", line.lower())
+        if line and key not in seen:
+            seen.add(key)
+            lines.append(line)
+    return "\n".join(lines).strip()
+
+
+def _profile_context(profile: dict, *, include_outcome: bool) -> str:
+    profile = normalize_profile(profile)
+    patient, presentation = profile["patient"], profile["presentation"]
+    assessment, findings, summary = profile["assessment"], profile["findings"], profile["summary"]
+    lines = [
+        ("Demographics", " ".join(str(v) for v in (f"{patient['age_years']}y" if patient["age_years"] is not None else None,
+                                                    patient["sex"]) if v)),
+        ("Comorbidities", ", ".join(patient["comorbidities"])),
+        ("Chief complaint", presentation["chief_complaint"]),
+        ("History", (presentation["hpi"] or "")[:600]),
+        ("Imaging", f"{profile['study'].get('modality') or ''} {profile['study'].get('body_region') or ''}".strip()),
+        ("Imaging findings", "; ".join(findings["imaging_findings"])),
+        ("Lab findings", "; ".join(findings["lab_findings"])),
+        ("Diagnosis", assessment["diagnosis_primary"]),
+        ("Differential", ", ".join(assessment["differential"])),
+    ]
+    if include_outcome:
+        lines += [("Treatment", "; ".join(profile["management"]["treatments"] + profile["management"]["procedures"])),
+                  ("Outcome", profile["outcome"]["detail"]), ("Follow-up", profile["outcome"]["follow_up"]),
+                  ("Authors' conclusion", summary["conclusion"])]
+    return "\n".join(f"- {label}: {value}" for label, value in lines if value)
+
+
 @app.post("/chat_twin")
 async def chat_twin(
     query: str = Form(...),
     case_text: str = Form(...),
     current_profile: Optional[str] = Form(default=None),
+    twin_profile: Optional[str] = Form(default=None),
+    history: Optional[str] = Form(default=None),
 ):
     """
-    Dual-context clinical reasoning. Grounds MedGemma in:
-      1. The historical twin case (case_text + any structured payload)
-      2. The current patient's CaseProfile (current_profile JSON, optional)
-    Returns a markdown-formatted reply.
+    Grounded Q&A (retrieval-augmented generation): MedGemma answers using only
+    the retrieved twin case and the current patient's case report.
+    ``history`` is a JSON list of {role, content} prior turns.
     """
-    # ── Build current patient context block ──────────────────────────────────
+    twin_ctx = case_text[:1500]
+    if twin_profile:
+        try:
+            twin_ctx = _profile_context(json.loads(twin_profile), include_outcome=True) + f"\n- Source narrative: {case_text[:900]}"
+        except (ValueError, TypeError):
+            pass
     current_ctx = ""
     if current_profile:
         try:
-            cp = json.loads(current_profile)
-            pat = cp.get("patient", {})
-            pres = cp.get("presentation", {})
-            assess = cp.get("assessment", {})
-            findings = cp.get("findings", {})
-
-            age = pat.get("age_years")
-            sex = pat.get("sex")
-            comorbidities = ", ".join(pat.get("comorbidities", [])) or "none documented"
-            cc = pres.get("chief_complaint") or "not specified"
-            hpi = (pres.get("hpi") or "")[:300]
-            diagnosis = assess.get("diagnosis_primary") or "undetermined"
-            urgency = assess.get("urgency") or ""
-            icu = assess.get("icu_candidate") or ""
-
-            lung_findings = []
-            lungs = findings.get("lungs", {})
-            pleura = findings.get("pleura", {})
-            cardio = findings.get("cardiomediastinal", {})
-            if lungs.get("consolidation_present") == "yes": lung_findings.append("consolidation")
-            if lungs.get("edema_present") == "yes": lung_findings.append("pulmonary edema")
-            if lungs.get("atelectasis_present") == "yes": lung_findings.append("atelectasis")
-            if pleura.get("effusion_present") == "yes": lung_findings.append("pleural effusion")
-            if pleura.get("pneumothorax_present") == "yes": lung_findings.append("pneumothorax")
-            if cardio.get("cardiomegaly") == "yes": lung_findings.append("cardiomegaly")
-
-            findings_str = ", ".join(lung_findings) if lung_findings else "none extracted"
-
-            current_ctx = f"""
-## Current Patient Profile
-- **Demographics:** {f'{age}y ' if age else ''}{sex or 'unknown sex'}
-- **Comorbidities:** {comorbidities}
-- **Chief complaint:** {cc}
-- **Clinical narrative:** {hpi or 'not provided'}
-- **Primary diagnosis (extracted):** {diagnosis}
-- **Urgency:** {urgency}{f' | ICU candidate: {icu}' if icu else ''}
-- **Key findings:** {findings_str}
-"""
-        except Exception as e:
-            print(f"Failed to parse current_profile: {e}")
-
-    # ── Build historical twin context block ───────────────────────────────────
-    twin_ctx = f"""
-## Historical Twin Case
-{case_text[:800]}
-"""
-
-    # ── System prompt ─────────────────────────────────────────────────────────
-    system_prompt = (
-        "You are an expert clinical reasoning assistant. "
-        "Consult the two medical cases below and answer the clinician's question. "
-        "Keep your answer EXTREMELY short (maximum 3 sentences or 3 bullet points total). "
-        "Use Markdown formatting (bullet points, **bold** text). "
-        "CRITICAL INSTRUCTIONS: Do NOT generate long repetitive lists. Never use more than 3 bullet points. "
-        "Do NOT add introductory filler. Jump straight into the clinical facts.\n"
-        "IMPORTANT: Do NOT append a 'Final Answer:' section or use mathematical LaTeX boxes (\\boxed{}). Just provide the direct text response.\n\n"
-        f"{twin_ctx}"
-        f"{current_ctx}"
-        "\n---\n"
-        f"Question: {query}\n\n"
-        "Expert Answer:"
+            current_ctx = _profile_context(json.loads(current_profile), include_outcome=False)
+        except (ValueError, TypeError):
+            logger.warning("Ignoring unparsable current_profile")
+    turns: list[dict[str, str]] = []
+    if history:
+        try:
+            turns = [{"role": t["role"], "content": str(t["content"])[:1200]} for t in json.loads(history)
+                     if isinstance(t, dict) and t.get("role") in ("user", "assistant")][-6:]
+        except (ValueError, TypeError, KeyError):
+            turns = []
+    prompt = (
+        "You are a clinical reasoning assistant helping a clinician compare a current patient with a "
+        "similar published case (a 'twin'). Answer using only the two case summaries below; if they do not "
+        "contain the answer, say so. Keep the answer under 120 words, use Markdown bullets and **bold** key "
+        "terms, and do not give a definitive treatment order for the current patient.\n\n"
+        f"## Twin case (published case report)\n{twin_ctx}\n\n"
+        f"## Current patient\n{current_ctx or '- Not provided'}\n\n"
+        f"Question: {query}"
     )
-
-    dummy_img = Image.new("RGB", (336, 336), color=(0, 0, 0))
+    started = time.perf_counter()
     try:
-        import asyncio
-        stop_words = ["Final Answer:", "Final Answer", "---\nQuestion:", "Question:"]
-        resp = await asyncio.to_thread(query_medgemma, dummy_img, prompt=system_prompt, max_tokens=350, stop_sequences=stop_words)
-        if isinstance(resp, list) and len(resp) > 0:
-            reply = resp[0].get("generated_text", "").strip()
-            
-            # Cleanly strip prompt echoing without relying on arbitrary [-50:] slices:
-            if "Expert Answer:" in reply:
-                reply = reply.split("Expert Answer:")[-1].strip()
-            elif f"Question: {query}" in reply:
-                reply = reply.split(f"Question: {query}")[-1].strip()
-
-            # Strip mathematical "Final Answer:" boxed formatting AND loops
-            import re
-            
-            # The ultimate loop killer: If it generated "Final Answer" at all, 
-            # throw away everything from that point onward forever.
-            if "Final Answer" in reply:
-                reply = reply.split("Final Answer")[0].strip()
-                
-            reply = re.sub(r"\\boxed{", "", reply)
-            
-            # Remove trailing closing brace from LaTeX box if it exists at the end
-            if reply.endswith("}"):
-                reply = reply[:-1].strip()
-                
-            # Clean up leading non-word artifacts if model started weirdly
-            reply = re.sub(r"^[\W_]+", "", reply)
-
-            # BRUTAL DEDUPLICATION: Kill repeating lines (AI stuttering)
-            lines = [line.strip() for line in reply.split('\n') if line.strip()]
-            seen = set()
-            dedupped_lines = []
-            for line in lines:
-                # Use a slightly normalized version of the line for matching to catch slight variations
-                norm_line = re.sub(r'\W+', '', line.lower())
-                if norm_line not in seen:
-                    seen.add(norm_line)
-                    dedupped_lines.append(line)
-            
-            # Rejoin the cleaned lines
-            reply = '\n\n'.join(dedupped_lines)
-
-            if not reply:
-                reply = "I don't have enough information in the provided case context to answer that."
-            return {"reply": reply}
+        reply = await asyncio.to_thread(query_text, prompt, model=MEDGEMMA_MODEL, max_tokens=400, history=turns)
+        reply = _clean_reply(reply) or "I don't have enough information in these two cases to answer that."
+        return {"reply": reply, "trace": [_step(MEDGEMMA_MODEL, "Grounded answer from twin + current case", started)]}
     except Exception as e:
-        print(f"MedGemma chat error: {e}")
-
-    return {"reply": "I'm sorry, I couldn't reach the AI reasoning engine to answer this question right now."}
-
+        logger.exception("MedGemma chat failed")
+        raise HTTPException(status_code=502, detail=f"MedGemma could not answer right now: {e}")
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# /enhance_profile  – MedGemma generates deep Clinical Synthesis
-# ──────────────────────────────────────────────────────────────────────────────
 @app.post("/enhance_profile")
 async def enhance_profile(
     profile_json: str = Form(...),
     file: Optional[UploadFile] = File(None)
 ):
-    """
-    Takes the structured case profile JSON and an optional image,
-    and asks MedGemma to synthesize hidden insights, missing risk factors,
-    and prognostic observations into a 3-4 sentence Markdown block.
-    """
+    """MedGemma synthesis of the case (text-only) plus an imaging read when an image is supplied."""
     try:
         profile_data = json.loads(profile_json)
-        
-        # Build context from profile
-        age = profile_data.get("patient", {}).get("age_years", "")
-        sex = profile_data.get("patient", {}).get("sex", "")
-        cc = profile_data.get("presentation", {}).get("chief_complaint", "")
-        hpi = profile_data.get("presentation", {}).get("hpi", "")
-        pmh = profile_data.get("presentation", {}).get("pmh", "")
-        dx = profile_data.get("assessment", {}).get("diagnosis_primary", "")
-        comorb = ", ".join(profile_data.get("patient", {}).get("comorbidities", []) or [])
-        
-        ctx = f"Patient: {age}y {sex}\nCC: {cc}\nHPI: {hpi}\nPMH: {pmh}\nComorbidities: {comorb}\nPrimary Dx: {dx}"
-        
-        system_prompt = (
-            "You are an expert clinical reasoning assistant. "
-            "Review the patient profile below (and the image if provided). "
-            "Write an 'AI Clinical Synthesis' providing deep medical insights, potential "
-            "hidden risk factors, or prognostic observations that are NOT just repeating the provided text. "
-            "Keep your synthesis to EXACTLY 3-4 short sentences or bullet points. "
-            "Use Markdown format (bold key terms). Do NOT generate repetitive lists. "
-            "Do NOT append 'Final Answer:'. Do not include intro filler.\n\n"
-            f"## Case Profile\n{ctx[:800]}\n\n"
-            "Clinical Synthesis:"
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=f"Profile is not valid JSON: {e}")
+    ctx = _profile_context(profile_data, include_outcome=False)
+    synthesis_prompt = (
+        "You are an expert clinical reasoning assistant. Review this structured case report and write an "
+        "'AI Clinical Synthesis': 3-4 short Markdown bullets with insights that are NOT a restatement of the "
+        "text — e.g. likely differentials to consider, risk factors, red flags, and what information is "
+        "missing. Bold key terms. No introduction.\n\n"
+        f"## Case report\n{ctx}"
+    )
+    tasks = [asyncio.to_thread(query_text, synthesis_prompt, model=MEDGEMMA_MODEL, max_tokens=350)]
+    trace_labels = [(MEDGEMMA_MODEL, "Clinical synthesis (text-only)")]
+    if file and file.filename:
+        img = Image.open(io.BytesIO(await file.read())).convert("RGB")
+        imaging_prompt = (
+            "You are an expert radiologist/clinician. Describe the key visible findings in this image and how "
+            "they relate to the case context below, in 2-3 short sentences. Bold key terms. Say what is unclear."
+            f"\n\n## Case context\n{ctx[:800]}"
         )
-
-        img = None
-        has_image = False
-        if file and file.filename:
-            content = await file.read()
-            img = Image.open(io.BytesIO(content)).convert("RGB")
-            has_image = True
-        else:
-            img = Image.new("RGB", (336, 336), color=(0, 0, 0))
-
-        import asyncio
-        stop_words_synthesis = ["Final Answer:", "Final Answer", "---\nClinical Synthesis:", "Clinical Synthesis:"]
-        
-        # Prepare concurrent tasks
-        tasks = [
-            asyncio.to_thread(query_medgemma, img, prompt=system_prompt, max_tokens=250, stop_sequences=stop_words_synthesis)
-        ]
-        
-        # If image exists, add a second task for Imaging Context
-        if has_image:
-            imaging_prompt = (
-                "You are an expert radiologist. "
-                "Review the provided medical image and the patient's brief clinical context below. "
-                "Write an 'Imaging Context' summary focusing strictly on the key radiological findings, "
-                "their severity, and their direct clinical relevance to the patient's presentation. "
-                "Keep it to EXACTLY 2-3 short sentences. "
-                "Use Markdown format (bold key terms). Do NOT generate repetitive lists. "
-                "Do NOT append 'Final Answer:'.\n\n"
-                f"## Case Context\n{ctx[:500]}\n\n"
-                "Imaging Context:"
-            )
-            stop_words_imaging = ["Final Answer:", "Final Answer", "---\nImaging Context:", "Imaging Context:"]
-            tasks.append(
-                asyncio.to_thread(query_medgemma, img, prompt=imaging_prompt, max_tokens=200, stop_sequences=stop_words_imaging)
-            )
-
-        # Execute concurrently
-        results = await asyncio.gather(*tasks)
-        
-        # --- Process Synthesis ---
-        resp_synthesis = results[0]
-        reply_synthesis = ""
-        if isinstance(resp_synthesis, list) and len(resp_synthesis) > 0:
-            reply_synthesis = resp_synthesis[0].get("generated_text", "").strip()
-            
-            if "Clinical Synthesis:" in reply_synthesis:
-                reply_synthesis = reply_synthesis.split("Clinical Synthesis:")[-1].strip()
-            if "Final Answer" in reply_synthesis:
-                reply_synthesis = reply_synthesis.split("Final Answer")[0].strip()
-                
-            import re
-            reply_synthesis = re.sub(r"\\boxed{", "", reply_synthesis)
-            if reply_synthesis.endswith("}"): reply_synthesis = reply_synthesis[:-1].strip()
-            reply_synthesis = re.sub(r"^[\W_]+", "", reply_synthesis)
-
-            # Deduplication
-            lines = [line.strip() for line in reply_synthesis.split('\n') if line.strip()]
-            seen = set()
-            dedupped_lines = []
-            for line in lines:
-                norm_line = re.sub(r'\W+', '', line.lower())
-                if norm_line not in seen:
-                    seen.add(norm_line)
-                    dedupped_lines.append(line)
-            reply_synthesis = '\n\n'.join(dedupped_lines)
-
-        if not reply_synthesis:
-            reply_synthesis = "Unable to generate clinical synthesis."
-
-        # --- Process Imaging Context (if available) ---
-        reply_imaging = None
-        if has_image and len(results) > 1:
-            resp_imaging = results[1]
-            if isinstance(resp_imaging, list) and len(resp_imaging) > 0:
-                reply_imaging = resp_imaging[0].get("generated_text", "").strip()
-                
-                if "Imaging Context:" in reply_imaging:
-                    reply_imaging = reply_imaging.split("Imaging Context:")[-1].strip()
-                if "Final Answer" in reply_imaging:
-                    reply_imaging = reply_imaging.split("Final Answer")[0].strip()
-                    
-                import re
-                reply_imaging = re.sub(r"\\boxed{", "", reply_imaging)
-                if reply_imaging.endswith("}"): reply_imaging = reply_imaging[:-1].strip()
-                reply_imaging = re.sub(r"^[\W_]+", "", reply_imaging)
-
-                # Deduplication
-                lines = [line.strip() for line in reply_imaging.split('\n') if line.strip()]
-                seen = set()
-                dedupped_lines = []
-                for line in lines:
-                    norm_line = re.sub(r'\W+', '', line.lower())
-                    if norm_line not in seen:
-                        seen.add(norm_line)
-                        dedupped_lines.append(line)
-                reply_imaging = '\n\n'.join(dedupped_lines)
-
-        return {
-            "synthesis": reply_synthesis,
-            "imaging_context": reply_imaging
-        }
-            
-    except Exception as e:
-        print(f"MedGemma enhance error: {e}")
-        return {"synthesis": "I'm sorry, I couldn't generate the clinical synthesis right now.", "imaging_context": None}
-
-    return {"synthesis": "Unable to process the request.", "imaging_context": None}
+        tasks.append(asyncio.to_thread(query_medgemma, img, prompt=imaging_prompt, max_tokens=250))
+        trace_labels.append((MEDGEMMA_MODEL, "Image read in case context"))
+    started = time.perf_counter()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    if isinstance(results[0], Exception):
+        logger.error("MedGemma synthesis failed: %s", results[0])
+        raise HTTPException(status_code=502, detail="MedGemma could not generate the clinical synthesis. Please retry.")
+    synthesis = _clean_reply(results[0])
+    imaging = None
+    if len(results) > 1 and not isinstance(results[1], Exception):
+        imaging = _clean_reply(results[1][0].get("generated_text", ""))
+    trace = [_step(model, task, started) for model, task in trace_labels]
+    return {"synthesis": synthesis or "Unable to generate clinical synthesis.", "imaging_context": imaging, "trace": trace}
 
 
-# ──────────────────────────────────────────────────────────────────────────────
-# /explain_selection  – MedGemma explains a highlighted phrase in context
-# ──────────────────────────────────────────────────────────────────────────────
+LOCAL_LANGUAGES = {"hi": "Hindi", "mr": "Marathi"}
+
+
+def _local_language_prompt(english: str, term: str, language: str) -> str:
+    return (
+        f"Rewrite the following explanation of the medical term \"{term}\" for a patient who speaks {language}. "
+        f"Write in simple, everyday spoken {language} in Devanagari script, the way a kind family doctor would "
+        "explain it: 2-3 short sentences, no difficult words. Keep the original English medical term once in "
+        "brackets so the patient can match it to their report. Use only the facts in the explanation below; "
+        "do not add causes, treatments or advice that it does not contain. Reply with the explanation only.\n\n"
+        f"Explanation:\n{english}"
+    )
+
+
 @app.post("/explain_selection")
 async def explain_selection(
     selected_text: str = Form(...),
     context: str = Form(default=""),
+    audience: str = Form(default="clinician"),
+    language: str = Form(default="en"),
 ):
+    """MedGemma explains a highlighted term in context, for a clinician or in plain language.
+
+    With ``language`` hi/mr, a two-model chain runs: MedGemma writes the plain-
+    language English explanation (medical accuracy), then Gemma 4 rewrites it in
+    simple Hindi or Marathi (multilingual fluency) without adding facts.
     """
-    Given a short highlighted phrase and its surrounding context,
-    ask MedGemma to explain it in 1-2 plain-language clinical sentences.
-    """
-    context_snippet = context[:500].strip()
+    if language not in ("en", *LOCAL_LANGUAGES):
+        raise HTTPException(status_code=400, detail=f"Unsupported language: {language}")
+    if language != "en":
+        audience = "patient"
+    term = selected_text.strip()[:200]
+    level = ("in plain language a patient could understand, avoiding jargon" if audience == "patient"
+             else "for a clinical audience")
     prompt = (
-        f"You are a concise medical education assistant. "
-        f"Explain the following medical term or phrase in exactly 1-2 sentences, "
-        f"suitable for a clinical audience. "
-        f"Phrase: \"{selected_text}\". "
-        f"Context: \"{context_snippet}\". "
-        f"Do NOT repeat the phrase back as a complete sentence. Start directly with the explanation."
+        f"Explain the medical term or phrase \"{term}\" in 1-2 sentences, {level}. "
+        f"Use the surrounding context only to pick the right meaning: \"{context[:500].strip()}\". "
+        "Start directly with the explanation."
+    )
+    started = time.perf_counter()
+    try:
+        raw = await asyncio.to_thread(query_text, prompt, model=MEDGEMMA_MODEL, max_tokens=160)
+    except Exception as e:
+        logger.exception("MedGemma explain failed")
+        raise HTTPException(status_code=502, detail=f"MedGemma explanation unavailable: {e}")
+    sentences = re.split(r"(?<=[.!?])\s+", _clean_reply(raw))
+    english = " ".join(sentences[:3]).strip()
+    trace = [_step(MEDGEMMA_MODEL, "Explain highlighted term" + (" in plain English" if audience == "patient" else ""),
+                   started)]
+    if language == "en":
+        return {"explanation": english, "language": "en", "trace": trace}
+
+    name = LOCAL_LANGUAGES[language]
+    started = time.perf_counter()
+    try:
+        local = await asyncio.to_thread(query_text, _local_language_prompt(english, term, name), model=GEMMA_MODEL,
+                                        max_tokens=400, temperature=0.2, thinking=False)
+    except Exception as e:
+        logger.exception("Gemma 4 translation failed")
+        raise HTTPException(status_code=502, detail=f"Gemma 4 could not write the {name} explanation: {e}")
+    trace.append(_step(GEMMA_MODEL, f"Rewrite for a patient in simple {name}", started))
+    return {"explanation": _clean_reply(local), "explanation_en": english, "language": language, "trace": trace}
+
+
+# ──────────────────────────────────────────────────────────────────────────────
+# /extract  – unstructured notes + images -> structured case report
+# ──────────────────────────────────────────────────────────────────────────────
+IMAGE_READ_PROMPT = (
+    "Describe the key findings visible in this medical image as a short list of findings, the way a "
+    "specialist would dictate them (modality and body region first, then findings). Mention notable "
+    "normal findings only if relevant. Do not give a final diagnosis. Maximum 80 words."
+)
+
+
+def _image_read_prompt(collection: str | None) -> str:
+    """Tell MedGemma what kind of image it is (from MedSigLIP's routing) so it reads it as that.
+
+    Without this, MedGemma has guessed wrong, e.g. describing bone X-ray findings for a
+    photograph of psoriatic legs.
+    """
+    if not collection:
+        return IMAGE_READ_PROMPT
+    kind = COLLECTIONS[collection]["zero_shot"].removeprefix("a ").removeprefix("an ")
+    return (
+        f"This image is {COLLECTIONS[collection]['zero_shot']}. Describe the key findings visible in it as a "
+        f"short list, the way a specialist reading a {kind} would dictate them. Mention notable normal "
+        "findings only if relevant. Do not give a final diagnosis. Maximum 80 words."
     )
 
-    dummy_img = Image.new("RGB", (336, 336), color=(0, 0, 0))
-    try:
-        import asyncio
-        resp = await asyncio.to_thread(query_medgemma, dummy_img, prompt=prompt, max_tokens=120)
-        explanation = ""
-        if isinstance(resp, list) and len(resp) > 0:
-            raw = resp[0].get("generated_text", "").strip()
-            # Strip echoed prompt if model returns it
-            for marker in ["Start directly with the explanation.", context_snippet, selected_text]:
-                if marker and raw.endswith(marker) is False and marker in raw:
-                    raw = raw.split(marker)[-1].strip()
-            # Keep only first 2 sentences
-            import re as _re
-            sentences = _re.split(r"(?<=[.!?])\s+", raw)
-            explanation = " ".join(sentences[:2]).strip()
-
-        if not explanation:
-            explanation = f'"{selected_text}" — a medical term relevant to this clinical case.'
-
-        return {"explanation": explanation}
-    except Exception as e:
-        print(f"MedGemma explain_selection error: {e}")
-        return {"explanation": f'"{selected_text}" — unable to reach the AI explanation engine right now.'}
-
-
-# ──────────────────────────────────────────────────────────────────────────────
-# /extract  – mock CaseProfile extraction
-# When MedGemma becomes available, replace _extract_profile() body only.
-# ──────────────────────────────────────────────────────────────────────────────
 
 @app.post("/extract")
 async def extract(
@@ -1026,17 +1087,12 @@ async def extract(
     notes_file: Optional[UploadFile] = File(default=None),
 ):
     """
-    Extract a structured CaseProfile from uploaded images and/or clinical notes.
-    Currently uses regex-based mock extraction; replace with MedGemma when ready.
+    Build a clean structured case report:
+      1. MedSigLIP zero-shot labels the image type (no training needed).
+      2. MedGemma reads each image (up to 3) into findings text.
+      3. Gemma 4 turns notes + image reads into the case-report JSON schema.
+    The regex extractor runs only if Gemma 4 is unreachable, and the response says so.
     """
-    image_names: list[str] = []
-    if images:
-        for img in images:
-            if img.filename:
-                image_names.append(img.filename)
-
-    # Extract document text by file format. In particular, never decode PDF
-    # bytes as UTF-8, which would leak `%PDF-...` syntax into the clinical HPI.
     notes_text = notes
     if notes_file:
         try:
@@ -1046,36 +1102,73 @@ async def extract(
         except DocumentExtractionError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-    profile = await _extract_profile(images, notes_text)
-    return {"profile": profile}
-
-
-async def _extract_profile(images: Optional[List[UploadFile]], text: str) -> dict:
-    """
-    Extracts a structured CaseProfile. 
-    If images are provided, it uses MedGemma to analyze them alongside the text notes.
-    Otherwise, it falls back to the regex-based mock.
-    """
-    image_names = [img.filename for img in images if img.filename] if images else []
-    
-    # If we have an image, let's try to get real insights from MedGemma
-    medgemma_insight = ""
-    if images and len(images) > 0:
+    pil_images: list[Image.Image] = []
+    image_names: list[str] = []
+    for upload in images or []:
+        if not upload.filename:
+            continue
+        image_names.append(upload.filename)
         try:
-            # Read the first image for analysis
-            contents = await images[0].read()
-            # Reset seek position if it's going to be used elsewhere, though here we are done with it
-            images[0].file.seek(0) 
-            img_pil = Image.open(io.BytesIO(contents)).convert("RGB")
-            
-            prompt = f"Analyze this chest X-ray image in the context of these clinical notes: '{text}'. Identify key findings like consolidation, effusion, or cardiomegaly. Be structured."
-            response = query_medgemma(img_pil, prompt=prompt, max_tokens=300)
-            
-            if isinstance(response, list) and len(response) > 0:
-                medgemma_insight = response[0].get("generated_text", "")
-        except Exception as e:
-            print(f"MedGemma extraction error: {e}")
+            pil_images.append(Image.open(io.BytesIO(await upload.read())).convert("RGB"))
+        except Exception:
+            logger.warning("Skipping unreadable image %s", upload.filename)
+    if not notes_text.strip() and not pil_images:
+        raise HTTPException(status_code=400, detail="Add clinical notes or an image to build a case report.")
 
+    trace: list[dict] = []
+    routing = None
+    image_reads: list[str] = []
+    if pil_images:
+        started = time.perf_counter()
+        try:
+            chosen, scores = await asyncio.to_thread(_route_collection, pil_images[0])
+            routing = {"collection": chosen, "scores": scores}
+            trace.append(_step("MedSigLIP", f"Zero-shot image type: {scores[0]['label']}", started))
+        except Exception as exc:
+            trace.append(_step("MedSigLIP", f"Zero-shot classification unavailable: {exc}", started))
+        started = time.perf_counter()
+        read_prompt = _image_read_prompt(routing["collection"] if routing else None)
+        # temperature 0: the same image gives the same read, so demos are repeatable.
+        reads = await asyncio.gather(*[asyncio.to_thread(query_medgemma, img, prompt=read_prompt, max_tokens=220, temperature=0)
+                                       for img in pil_images[:3]], return_exceptions=True)
+        for read in reads:
+            if not isinstance(read, Exception):
+                text = _clean_reply(read[0].get("generated_text", ""))
+                if text:
+                    image_reads.append(text)
+        trace.append(_step(MEDGEMMA_MODEL, f"Read {len(image_reads)} image(s) into findings", started,
+                           output=image_reads))
+
+    case_id, image_id = str(uuid.uuid4()), str(uuid.uuid4())
+    base = empty_profile(article_id=case_id, image_id=image_id, modality=None, body_region=None)
+    base["provenance"].update({"dataset_name": None, "pmc_id": None})
+    method = GEMMA_MODEL
+    try:
+        fields, step = await asyncio.to_thread(extract_profile, intake_prompt(notes_text, image_reads))
+        trace.append(step)
+        profile = merge_profile(base, fields)
+        # A new patient has no outcome yet, whatever the notes imply.
+        profile["outcome"] = base["outcome"]
+    except Exception as exc:
+        logger.exception("Gemma 4 extraction failed; using regex fallback")
+        method = "regex-fallback"
+        profile = _regex_profile(notes_text, image_names, "\n".join(image_reads))
+        trace.append({"model": "regex", "task": f"Fallback extraction (Gemma 4 unavailable: {exc})", "ms": 0})
+    profile["case_id"], profile["image_id"], profile["profile_id"] = case_id, image_id, f"{case_id}:{image_id}"
+    if routing and routing["collection"]:
+        spec = COLLECTIONS[routing["collection"]]
+        profile["study"]["collection"] = routing["collection"]
+        profile["study"]["modality"] = profile["study"].get("modality") or spec["modality"]
+        profile["study"]["body_region"] = profile["study"].get("body_region") or spec["body_region"]
+    if image_reads:
+        profile["extra_fields"]["ai_image_read"] = image_reads
+    return {"profile": profile, "method": method, "routing": routing, "trace": trace}
+
+
+def _regex_profile(text: str, image_names: list[str], medgemma_insight: str = "") -> dict:
+    """
+    Last-resort keyword extractor used only when Gemma 4 is unreachable.
+    """
     case_id = str(uuid.uuid4())
     image_id = str(uuid.uuid4())
 
@@ -1397,11 +1490,8 @@ async def _extract_profile(images: Optional[List[UploadFile]], text: str) -> dic
     if social_m:
         extra_fields["social_history"] = social_m.group(0).strip()[:250]
 
-    if extra_fields:
-        profile["extra_fields"] = extra_fields
-    else:
-        profile["extra_fields"] = {}
-
+    profile = normalize_profile(profile)
+    profile["extra_fields"] = extra_fields
     return profile
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -7,6 +7,7 @@ import json
 import re
 from pathlib import Path
 
+from collections_config import COLLECTIONS
 from manifest import MANIFEST_SCHEMA_VERSION
 
 
@@ -24,7 +25,7 @@ def validate(manifest_path: Path, source: Path | None = None) -> dict:
         raise ValueError("Unexpected manifest schema version")
     records = manifest.get("records")
     if not isinstance(records, list) or not records:
-        raise ValueError("Manifest contains no CXR records")
+        raise ValueError("Manifest contains no records")
     ids = set()
     assets = manifest_path.parent / "assets"
     for record in records:
@@ -36,31 +37,42 @@ def validate(manifest_path: Path, source: Path | None = None) -> dict:
         ids.add(point_id)
         if profile.get("profile_id") != f"{record.get('article_id')}:{primary.get('asset_id')}":
             raise ValueError(f"Profile identity mismatch for {point_id}")
+        spec = COLLECTIONS.get(record.get("collection"))
+        if not spec:
+            raise ValueError(f"Unknown collection {record.get('collection')!r} for {point_id}")
+        if (primary.get("image_type"), primary.get("image_subtype")) != (spec["image_type"], spec["image_subtype"]):
+            raise ValueError(f"Image type does not match collection {record['collection']} for {point_id}")
         for image in [primary, *record.get("related_images", [])]:
             asset = assets / image.get("asset_id", "")
             if not asset.is_file():
                 raise FileNotFoundError(f"Missing copied asset: {asset}")
             if image.get("sha256") and sha256(asset) != image["sha256"]:
                 raise ValueError(f"Checksum mismatch: {asset}")
-    retained = manifest.get("stats", {}).get("retained_cxr_count")
-    if retained != len(records):
-        raise ValueError(f"Manifest stats says {retained} CXR records but contains {len(records)}")
-    report = {"records": len(records), "unique_point_ids": len(ids), "assets_checked": len(list(assets.iterdir()))}
+    stats = manifest.get("stats", {})
+    if stats.get("record_count") != len(records):
+        raise ValueError(f"Manifest stats says {stats.get('record_count')} records but contains {len(records)}")
+    report = {"records": len(records), "unique_point_ids": len(ids), "assets_checked": len(list(assets.iterdir())),
+              "by_collection": stats.get("by_collection"), "unavailable_extractions": stats.get("unavailable_extractions")}
     if source:
+        import sys
         import pandas as pd
-        captions = pd.read_csv(source / "captions_and_labels.csv")
-        expected = captions[(captions["image_subtype"] == "x_ray") & (captions["image_type"] == "radiology") &
-                            captions["caption"].fillna("").str.contains(r"chest\s*x[\s-]?ray|\bcxr\b", case=False, regex=True)].shape[0]
-        if expected != len(records):
-            raise ValueError(f"Expected {expected} CXR rows from source rule, manifest has {len(records)}")
-        report["expected_source_cxr_count"] = expected
+        sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "data_pipeline"))
+        from prepare_multicare import article_id, select_primaries
+        captions = pd.read_csv(source / "captions_and_labels.csv", low_memory=False)
+        captions["article_id"] = captions["patient_id"].map(article_id)
+        expected = select_primaries(captions[captions["article_id"] != ""], list(stats["by_collection"]),
+                                    stats["per_collection_articles"], stats["images_per_patient"],
+                                    stats.get("collection_articles"))
+        if len(expected) != len(records) + stats.get("missing_source_images", 0) + stats.get("zero_shot_rejected", 0):
+            raise ValueError(f"Selection rule gives {len(expected)} images, manifest has {len(records)}")
+        report["expected_source_images"] = len(expected)
     return report
 
 
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--manifest", type=Path, default=Path("dataset/manifest.json"))
-    parser.add_argument("--source", type=Path, default=None, help="Also verify the exact source CXR-rule count")
+    parser.add_argument("--source", type=Path, default=None, help="Also re-run the deterministic selection and compare counts")
     args = parser.parse_args()
     print(json.dumps(validate(args.manifest, args.source), indent=2))
 

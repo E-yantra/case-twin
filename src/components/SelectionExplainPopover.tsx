@@ -11,14 +11,22 @@ interface SelectionState {
     width: number;
 }
 
+type ExplainMode = "clinician" | "patient" | "hi" | "mr";
+
+const LANGUAGE_NAME: Record<string, string> = { hi: "हिंदी", mr: "मराठी" };
+
 interface PopoverState {
     explanation: string;
+    /** English source when the explanation was rewritten in a local language. */
+    explanationEn?: string;
+    language?: string;
     x: number;
     y: number;
     width: number;
 }
 
 import { API_BASE } from "@/lib/api";
+import { useDashboardStore } from "@/store/dashboardStore";
 const BACKEND = API_BASE;
 
 /**
@@ -37,15 +45,20 @@ export function SelectionExplainPopover({
     const wrapperRef = useRef<HTMLDivElement>(null);
     const [selection, setSelection] = useState<SelectionState | null>(null);
     const [popover, setPopover] = useState<PopoverState | null>(null);
-    const [loading, setLoading] = useState(false);
+    const [loading, setLoading] = useState<ExplainMode | null>(null);
+    const addTrace = useDashboardStore(s => s.addTrace);
 
     const clearAll = useCallback(() => {
         setSelection(null);
         setPopover(null);
-        setLoading(false);
+        setLoading(null);
     }, []);
 
-    const handleMouseUp = useCallback(() => {
+    const handleMouseUp = useCallback((e: React.MouseEvent) => {
+        // The floating buttons/popover render in a portal, but React still bubbles
+        // their mouseup here; ignore it so clicking inside them doesn't reset them.
+        const floatEl = document.getElementById("mg-sel-float");
+        if (floatEl && floatEl.contains(e.target as Node)) return;
         const sel = window.getSelection();
         if (!sel || sel.isCollapsed || !sel.toString().trim()) return;
 
@@ -81,25 +94,34 @@ export function SelectionExplainPopover({
         return () => document.removeEventListener("mousedown", handleDocMouseDown);
     }, [handleDocMouseDown]);
 
-    const handleExplain = useCallback(async () => {
+    const handleExplain = useCallback(async (mode: ExplainMode) => {
         if (!selection) return;
         const { text, context, x, y, width } = selection;
-        setLoading(true);
+        setLoading(mode);
         setSelection(null);
         try {
             const fd = new FormData();
             fd.append("selected_text", text);
             fd.append("context", context);
+            fd.append("audience", mode === "clinician" ? "clinician" : "patient");
+            fd.append("language", mode === "hi" || mode === "mr" ? mode : "en");
             const res = await fetch(`${BACKEND}/explain_selection`, { method: "POST", body: fd });
-            if (!res.ok) throw new Error(`HTTP ${res.status}`);
-            const data = await res.json();
-            setPopover({ explanation: data.explanation ?? "No explanation available.", x, y, width });
-        } catch {
-            setPopover({ explanation: "Unable to reach MedGemma right now. Please try again.", x, y, width });
+            const data = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error(data.detail || `HTTP ${res.status}`);
+            setPopover({
+                explanation: data.explanation || "No explanation available.",
+                explanationEn: data.explanation_en,
+                language: data.language,
+                x, y, width,
+            });
+            if (data.trace) addTrace(`Explain "${text.slice(0, 40)}"`, data.trace);
+        } catch (error) {
+            const reason = error instanceof Error ? error.message : "unknown error";
+            setPopover({ explanation: `Unable to reach MedGemma right now (${reason}). Please try again.`, x, y, width });
         } finally {
-            setLoading(false);
+            setLoading(null);
         }
-    }, [selection]);
+    }, [selection, addTrace]);
 
     return (
         <div ref={wrapperRef} className={cn("relative", className)} onMouseUp={handleMouseUp}>
@@ -107,7 +129,7 @@ export function SelectionExplainPopover({
             {createPortal(
                 <>
                     {selection && !loading && <AskButton selection={selection} onExplain={handleExplain} />}
-                    {loading && <ThinkingBadge />}
+                    {loading && <ThinkingBadge mode={loading} />}
                     {popover && <ExplainPopover popover={popover} onDismiss={clearAll} />}
                 </>,
                 document.body
@@ -118,8 +140,8 @@ export function SelectionExplainPopover({
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
 
-function AskButton({ selection, onExplain }: { selection: SelectionState; onExplain: () => void }) {
-    const btnW = 148;
+function AskButton({ selection, onExplain }: { selection: SelectionState; onExplain: (mode: ExplainMode) => void }) {
+    const btnW = 300;
     const rawLeft = selection.x + selection.width / 2 - btnW / 2;
     const left = Math.max(8, Math.min(window.innerWidth - btnW - 8, rawLeft));
     const top = Math.max(8, selection.y - 38);
@@ -130,11 +152,12 @@ function AskButton({ selection, onExplain }: { selection: SelectionState; onExpl
             style={{ position: "fixed", top, left, zIndex: 99999, width: btnW }}
             className="animate-in fade-in zoom-in-95 duration-100"
         >
+            <div className="flex w-full gap-1">
             <button
                 onMouseDown={(e) => e.preventDefault()}
-                onClick={onExplain}
+                onClick={() => onExplain("clinician")}
                 className={cn(
-                    "w-full flex items-center justify-center gap-1.5 px-3 py-[5px] rounded-md",
+                    "flex-1 flex items-center justify-center gap-1.5 px-3 py-[5px] rounded-md",
                     "text-[12px] font-medium text-zinc-700 select-none whitespace-nowrap",
                     "bg-white border border-zinc-300 shadow-md shadow-zinc-200/60",
                     "hover:bg-zinc-50 hover:border-zinc-400 hover:text-zinc-900",
@@ -142,15 +165,31 @@ function AskButton({ selection, onExplain }: { selection: SelectionState; onExpl
                 )}
             >
                 <Stethoscope className="h-3.5 w-3.5 text-zinc-500 shrink-0" />
-                Explain with AI
+                Explain
             </button>
+            {([
+                ["patient", "Simple", "Explain in plain English for a patient"],
+                ["hi", "हिंदी", "Explain simply in Hindi (MedGemma, then Gemma 4)"],
+                ["mr", "मराठी", "Explain simply in Marathi (MedGemma, then Gemma 4)"],
+            ] as const).map(([mode, label, title]) => (
+                <button
+                    key={mode}
+                    onMouseDown={(e) => e.preventDefault()}
+                    onClick={() => onExplain(mode)}
+                    className="px-2.5 py-[5px] rounded-md text-[12px] font-medium text-zinc-700 select-none whitespace-nowrap bg-white border border-zinc-300 shadow-md shadow-zinc-200/60 hover:bg-zinc-50 hover:border-zinc-400 hover:text-zinc-900 transition-colors duration-100"
+                    title={title}
+                >
+                    {label}
+                </button>
+            ))}
+            </div>
             {/* Downward caret */}
             <div className="absolute -bottom-[5px] left-1/2 -translate-x-1/2 h-2.5 w-2.5 rotate-45 bg-white border-r border-b border-zinc-300" />
         </div>
     );
 }
 
-function ThinkingBadge() {
+function ThinkingBadge({ mode }: { mode: ExplainMode }) {
     return (
         <div
             id="mg-sel-float"
@@ -159,7 +198,9 @@ function ThinkingBadge() {
         >
             <div className="flex items-center gap-2 px-4 py-2 rounded-md bg-white border border-zinc-200 shadow-lg text-[13px] font-medium text-zinc-600">
                 <Loader2 className="h-3.5 w-3.5 animate-spin text-zinc-400" />
-                MedGemma is thinking…
+                {mode === "hi" || mode === "mr"
+                    ? `MedGemma is explaining, then Gemma 4 is writing it in ${LANGUAGE_NAME[mode]}…`
+                    : "MedGemma is thinking…"}
             </div>
         </div>
     );
@@ -170,7 +211,7 @@ function ExplainPopover({ popover, onDismiss }: { popover: PopoverState; onDismi
     const [style, setStyle] = useState<React.CSSProperties>({ visibility: "hidden", position: "fixed", zIndex: 99999 });
     const [caretDir, setCaretDir] = useState<"up" | "down">("up");
 
-    const cardW = 300;
+    const cardW = popover.explanationEn ? 340 : 300;
     const MARGIN = 10; // min gap from all viewport edges
 
     useEffect(() => {
@@ -227,7 +268,7 @@ function ExplainPopover({ popover, onDismiss }: { popover: PopoverState; onDismi
                     <div className="flex items-center gap-1.5">
                         <Stethoscope className="h-3.5 w-3.5 text-zinc-500 shrink-0" />
                         <span className="text-[11px] font-semibold text-zinc-600 uppercase tracking-wide">
-                            MedGemma
+                            {popover.explanationEn ? `MedGemma → Gemma 4 · ${LANGUAGE_NAME[popover.language ?? ""] ?? ""}` : "MedGemma"}
                         </span>
                     </div>
                     <button
@@ -241,9 +282,16 @@ function ExplainPopover({ popover, onDismiss }: { popover: PopoverState; onDismi
 
                 {/* Explanation body */}
                 <div className="px-3.5 py-3">
-                    <p className="text-[13px] leading-[1.6] text-zinc-800">
+                    <p className={cn("leading-[1.6] text-zinc-800", popover.explanationEn ? "text-[15px]" : "text-[13px]")}
+                        lang={popover.language}>
                         {popover.explanation}
                     </p>
+                    {popover.explanationEn && (
+                        <details className="mt-2 text-[12px] text-zinc-500">
+                            <summary className="cursor-pointer select-none">English (MedGemma)</summary>
+                            <p className="mt-1 leading-relaxed">{popover.explanationEn}</p>
+                        </details>
+                    )}
                     <p className="mt-2 text-[10.5px] text-zinc-400">
                         AI-generated · not clinical advice
                     </p>

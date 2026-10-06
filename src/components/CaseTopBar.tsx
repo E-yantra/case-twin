@@ -1,5 +1,5 @@
 import { Link } from "react-router-dom";
-import { Check, FolderOpen, MessageSquare, Plus, Settings2 } from "lucide-react";
+import { Check, Info, MessageSquare } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export type Step = 0 | 1 | 2 | 3;
@@ -7,8 +7,8 @@ export type Step = 0 | 1 | 2 | 3;
 const stepLabels = ["Upload", "Matches" /*, "Route", "Memo" */] as const;
 
 interface CaseTopBarProps {
-  /** Which pill is highlighted. "chat" when on the Chat tab, otherwise the current wizard step. */
-  active: "chat" | Step;
+  /** Which pill is highlighted. "chat"/"about" on those pages, otherwise the current wizard step. */
+  active: "chat" | "about" | Step;
   /** Provided by the dashboard so Upload/Matches switch step in place instead of navigating. */
   onStepChange?: (next: Step) => void;
 }
@@ -43,7 +43,7 @@ export function CaseTopBar({ active, onStepChange }: CaseTopBarProps) {
             </li>
             {stepLabels.map((label, idx) => {
               const step = idx as Step;
-              const state = active === "chat" ? "default" : idx < active ? "done" : idx === active ? "active" : "default";
+              const state = typeof active !== "number" ? "default" : idx < active ? "done" : idx === active ? "active" : "default";
 
               return (
                 <li key={label}>
@@ -74,20 +74,15 @@ export function CaseTopBar({ active, onStepChange }: CaseTopBarProps) {
         </div>
 
         <div className="hidden lg:flex items-center gap-4">
-          {/* <button className="flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-medium transition-all duration-200 text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50">
-            <FolderOpen className="w-3.5 h-3.5" strokeWidth={2.5} /> My Cases
-          </button>
-
-          <button className="flex items-center gap-1.5 rounded-full bg-zinc-900 px-4 py-1.5 text-[13px] font-medium text-white shadow-md shadow-zinc-900/10 hover:bg-zinc-800 transition-all active:scale-[0.98]">
-            <Plus className="h-4 w-4" strokeWidth={2.5} />
-            New Case
-          </button>
-
-          <div className="w-px h-4 bg-zinc-200" />
-
-          <button aria-label="Settings" className="flex h-8 w-8 items-center justify-center rounded-full text-zinc-400 hover:bg-zinc-100 hover:text-zinc-600 transition-colors">
-            <Settings2 className="h-4 w-4" />
-          </button> */}
+          <Link
+            to="/about"
+            className={cn(
+              "flex items-center gap-1.5 px-3 py-1.5 rounded-full text-[13px] font-medium transition-colors",
+              active === "about" ? "bg-zinc-100 text-zinc-900" : "text-zinc-500 hover:text-zinc-900 hover:bg-zinc-50"
+            )}
+          >
+            <Info className="w-3.5 h-3.5" /> How it works
+          </Link>
         </div>
       </div>
     </header>
