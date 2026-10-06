@@ -43,10 +43,14 @@ def main() -> None:
     parser.add_argument("--target-collection", default=None)
     parser.add_argument("--source-api-key", default=None)
     parser.add_argument("--target-api-key", default=None)
+    parser.add_argument("--batch-size", type=int, default=64,
+                        help="Points per request; lower it on slow links (each point carries 4096+1152 floats)")
+    parser.add_argument("--timeout", type=int, default=60, help="Seconds per request")
     args = parser.parse_args()
-    source = QdrantClient(url=args.source, api_key=args.source_api_key)
-    target = QdrantClient(url=args.target, api_key=args.target_api_key)
-    copied = copy_collection(source, target, args.collection, args.target_collection or args.collection)
+    source = QdrantClient(url=args.source, api_key=args.source_api_key, timeout=args.timeout)
+    target = QdrantClient(url=args.target, api_key=args.target_api_key, timeout=args.timeout)
+    copied = copy_collection(source, target, args.collection, args.target_collection or args.collection,
+                             batch=args.batch_size)
     print(f"Done: {copied} points")
 
 
