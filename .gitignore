@@ -50,6 +50,4 @@ fully-done/
 dataset/
 medical_datasets/
 
-# demo images are dataset-derived; notes/README are tracked
-demo_samples/*.webp
 *.tar.gz
