@@ -897,6 +897,13 @@ def _profile_context(profile: dict, *, include_outcome: bool) -> str:
     return "\n".join(f"- {label}: {value}" for label, value in lines if value)
 
 
+# Twin chat memory: 16 messages is 8 question-and-answer exchanges, enough for a
+# meaningful conversation while keeping the prompt well inside MedGemma's context.
+CHAT_HISTORY_TURNS = 16
+CHAT_TURN_CHARS = 2000
+CHAT_NARRATIVE_CHARS = 2000
+
+
 @app.post("/chat_twin")
 async def chat_twin(
     query: str = Form(...),
@@ -913,7 +920,7 @@ async def chat_twin(
     twin_ctx = case_text[:1500]
     if twin_profile:
         try:
-            twin_ctx = _profile_context(json.loads(twin_profile), include_outcome=True) + f"\n- Source narrative: {case_text[:900]}"
+            twin_ctx = _profile_context(json.loads(twin_profile), include_outcome=True) + f"\n- Source narrative: {case_text[:CHAT_NARRATIVE_CHARS]}"
         except (ValueError, TypeError):
             pass
     current_ctx = ""
@@ -925,14 +932,14 @@ async def chat_twin(
     turns: list[dict[str, str]] = []
     if history:
         try:
-            turns = [{"role": t["role"], "content": str(t["content"])[:1200]} for t in json.loads(history)
-                     if isinstance(t, dict) and t.get("role") in ("user", "assistant")][-6:]
+            turns = [{"role": t["role"], "content": str(t["content"])[:CHAT_TURN_CHARS]} for t in json.loads(history)
+                     if isinstance(t, dict) and t.get("role") in ("user", "assistant")][-CHAT_HISTORY_TURNS:]
         except (ValueError, TypeError, KeyError):
             turns = []
     prompt = (
         "You are a clinical reasoning assistant helping a clinician compare a current patient with a "
         "similar published case (a 'twin'). Answer using only the two case summaries below; if they do not "
-        "contain the answer, say so. Keep the answer under 120 words, use Markdown bullets and **bold** key "
+        "contain the answer, say so. Keep the answer under 200 words, use Markdown bullets and **bold** key "
         "terms, and do not give a definitive treatment order for the current patient.\n\n"
         f"## Twin case (published case report)\n{twin_ctx}\n\n"
         f"## Current patient\n{current_ctx or '- Not provided'}\n\n"
@@ -940,7 +947,7 @@ async def chat_twin(
     )
     started = time.perf_counter()
     try:
-        reply = await asyncio.to_thread(query_text, prompt, model=MEDGEMMA_MODEL, max_tokens=400, history=turns)
+        reply = await asyncio.to_thread(query_text, prompt, model=MEDGEMMA_MODEL, max_tokens=700, history=turns)
         reply = _clean_reply(reply) or "I don't have enough information in these two cases to answer that."
         return {"reply": reply, "trace": [_step(MEDGEMMA_MODEL, "Grounded answer from twin + current case", started)]}
     except Exception as e:

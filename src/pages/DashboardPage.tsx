@@ -384,83 +384,51 @@ function MatchCard({
   item,
   selected,
   onSelect,
-  condensed
 }: {
   item: MatchItem;
   selected: boolean;
   onSelect: () => void;
-  condensed?: boolean;
 }) {
   const ringClass = item.score >= 75 ? "border-[var(--mr-action)] text-[var(--mr-action)]" : "border-[var(--mr-border)] text-[var(--mr-text)]";
   const outcomeKnown = item.outcome && item.outcome !== "Outcome not reported";
 
-  if (condensed) {
-    return (
-      <article
-        className={cn(
-          "mr-surface flex flex-col gap-3 p-4 transition-all hover:bg-zinc-50 cursor-pointer overflow-hidden group shrink-0",
-          selected ? "border-l-[4px] border-l-[var(--mr-action)] bg-blue-50/20" : "border-l-[4px] border-l-transparent"
-        )}
-        onClick={onSelect}
-      >
-        <div className="flex items-start justify-between gap-2">
-          <div className={cn("flex h-11 w-11 shrink-0 items-center justify-center rounded-full border-[3px] bg-white", ringClass)}>
-            <span className="text-[13px] font-semibold">{item.score}%</span>
-          </div>
-          <div className="flex-1 min-w-0 flex justify-end">
-            {outcomeKnown && <OutcomeBadge variant={item.outcomeVariant} label={OUTCOME_LABEL[item.outcomeVariant]} />}
-          </div>
-        </div>
-        <div className="space-y-1.5 min-w-0">
-          <h3 className="font-semibold text-zinc-900 text-[14px] leading-snug line-clamp-2 group-hover:text-[var(--mr-action)] transition-colors break-words">{item.diagnosis}</h3>
-          <p className="text-[12px] leading-relaxed text-zinc-500 line-clamp-2 break-words">{item.summary}</p>
-        </div>
-        <ScoreBreakdown item={item} compact />
-        <div className="flex flex-wrap text-[10px] font-medium text-zinc-400 uppercase tracking-wider gap-x-2 gap-y-1">
-          {item.collection && <span>{COLLECTION_LABEL[item.collection] ?? item.collection}</span>}
-          {item.journal && <span className="truncate max-w-[100px]">• {item.journal}</span>}
-          {item.year && <span>• {item.year}</span>}
-        </div>
-      </article>
-    );
-  }
-
   return (
     <article
       className={cn(
-        "mr-surface flex flex-col gap-4 p-5 lg:flex-row lg:items-start hover:shadow-md transition-all cursor-pointer group shrink-0",
-        selected && "border-l-[3px] border-l-[var(--mr-action)] bg-blue-50/10"
+        "mr-surface flex h-full flex-col gap-3 p-5 hover:shadow-md hover:border-[var(--mr-action)]/40 transition-all cursor-pointer group",
+        selected && "border-[var(--mr-action)]"
       )}
       onClick={onSelect}
     >
-      <div className={cn("flex h-16 w-16 shrink-0 items-center justify-center rounded-full border-[3px] bg-white transition-colors group-hover:border-[var(--mr-action)] group-hover:text-[var(--mr-action)]", ringClass)}>
-        <span className="text-[17px] font-semibold leading-[22px]">{item.score}%</span>
+      <div className="flex items-start justify-between gap-3">
+        <div className={cn("flex h-14 w-14 shrink-0 items-center justify-center rounded-full border-[3px] bg-white transition-colors group-hover:border-[var(--mr-action)] group-hover:text-[var(--mr-action)]", ringClass)}>
+          <span className="text-[16px] font-semibold leading-[22px]">{item.score}%</span>
+        </div>
+        <div className="flex flex-col items-end gap-1.5 min-w-0">
+          {outcomeKnown && <OutcomeBadge variant={item.outcomeVariant} label={OUTCOME_LABEL[item.outcomeVariant]} />}
+          {item.collection && <span className="text-[11px] font-medium uppercase tracking-wider text-zinc-400">{COLLECTION_LABEL[item.collection] ?? item.collection}</span>}
+        </div>
       </div>
 
-      <div className="min-w-0 flex-1 space-y-2 pr-4">
+      <div className="space-y-1.5">
         <p className="text-[15px] font-semibold leading-[20px] text-zinc-900 group-hover:text-[var(--mr-action)] transition-colors line-clamp-2 break-words">{item.diagnosis}</p>
-        <p className="text-[13px] leading-[20px] text-zinc-500 line-clamp-2 break-words">{item.summary}</p>
+        <p className="text-[13px] leading-[19px] text-zinc-500 line-clamp-3 break-words">{item.summary}</p>
+      </div>
 
-        {(item.conclusion || outcomeKnown) && (
-          <div className="rounded-lg border border-zinc-100 bg-zinc-50/70 px-3 py-2 text-[12px] leading-relaxed text-zinc-600 space-y-1">
-            {item.conclusion && <p className="line-clamp-2"><span className="font-semibold text-zinc-800">Conclusion: </span>{item.conclusion}</p>}
-            {outcomeKnown && <p className="line-clamp-2"><span className="font-semibold text-zinc-800">Outcome: </span>{item.outcome}</p>}
-          </div>
-        )}
+      {(item.conclusion || outcomeKnown) && (
+        <div className="rounded-lg border border-zinc-100 bg-zinc-50/70 px-3 py-2 text-[12px] leading-relaxed text-zinc-600 space-y-1">
+          {item.conclusion && <p className="line-clamp-2"><span className="font-semibold text-zinc-800">Conclusion: </span>{item.conclusion}</p>}
+          {outcomeKnown && <p className="line-clamp-2"><span className="font-semibold text-zinc-800">Outcome: </span>{item.outcome}</p>}
+        </div>
+      )}
 
+      <div className="mt-auto space-y-2 pt-1">
         <ScoreBreakdown item={item} />
-
         <div className="flex flex-wrap text-[11px] text-zinc-400 gap-x-3 gap-y-1 font-medium">
-          {item.collection && <span className="text-zinc-500">{COLLECTION_LABEL[item.collection] ?? item.collection}</span>}
           {item.pmc_id && <span className="flex items-center gap-1"><FileText className="h-3 w-3" /> {item.pmc_id}</span>}
           {item.year && <span>• {item.year}</span>}
           {item.journal && <span className="truncate max-w-[180px]">• {item.journal}</span>}
         </div>
-      </div>
-
-      <div className="flex shrink-0 flex-col gap-2 lg:items-end">
-        <p className="text-[13px] font-medium text-zinc-500 tracking-wide uppercase">{item.facility}</p>
-        {outcomeKnown && <OutcomeBadge variant={item.outcomeVariant} label={OUTCOME_LABEL[item.outcomeVariant]} />}
       </div>
     </article>
   );
@@ -547,6 +515,11 @@ function MatchesScreen({
 }) {
   const selected = selectedMatch !== null ? items[selectedMatch] : null;
   const addTrace = useDashboardStore(s => s.addTrace);
+
+  // The whole page scrolls now, so start each view (grid or twin detail) at the top.
+  useEffect(() => {
+    document.querySelector("main")?.scrollTo({ top: 0 });
+  }, [selectedMatch]);
   const historicalCaption = typeof selected?.raw_payload?.study?.caption === "string"
     ? selected.raw_payload.study.caption : null;
 
@@ -631,96 +604,53 @@ function MatchesScreen({
   };
 
   return (
-    <div className={cn(
-      "flex h-full min-h-0 gap-6",
-      selected === null ? "flex-col" : "flex-row"
-    )}>
-      {/* Left List Container */}
-      <div className={cn(
-        "flex min-h-0 flex-col gap-5 transition-all duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]",
-        selected === null ? "w-full max-w-[800px] mx-auto opacity-100" : "w-full max-w-[300px] xl:max-w-[380px] shrink-0 opacity-100"
-      )}>
-        <div className="flex items-center justify-between shrink-0">
-          <h1 className={cn("font-semibold text-zinc-900 tracking-tight transition-all", selected === null ? "text-[28px]" : "text-[20px] line-clamp-1")}>
-            {selected === null ? "Closest Case Twins" : "Top Matches"}
-          </h1>
-          {selected === null && (
-            <div className="flex items-center gap-3 animate-in fade-in duration-500">
-              <span className="text-[13px] font-medium text-zinc-500 tracking-wide uppercase">Top {items.length} results</span>
+    <div className="flex flex-col gap-6 pb-12">
+      {/* Grid of twins (page scrolls as a whole; model details live in the AI pipeline drawer) */}
+      {selected === null && (
+        <>
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <h1 className="text-[28px] font-semibold text-zinc-900 tracking-tight">Closest Case Twins</h1>
+            <div className="flex items-center gap-3">
+              {!isLoading && items.length > 0 && (
+                <span className="text-[13px] font-medium text-zinc-500 tracking-wide uppercase">Top {items.length} results</span>
+              )}
               <button onClick={onRefresh} disabled={isLoading} className="flex items-center gap-1 text-[12px] font-medium text-[var(--mr-action)] hover:underline disabled:opacity-50">
                 <RefreshCw className="h-3.5 w-3.5" /> Re-run search
               </button>
             </div>
-          )}
-        </div>
+          </div>
 
-        {selected === null && searchMeta && !isLoading && (
-          <div className="shrink-0 rounded-xl border border-zinc-200 bg-white p-4 text-[12px] text-zinc-600 space-y-2">
-            <p className="font-semibold text-zinc-800">How these twins were found</p>
-            {searchMeta.routing && (
-              <p>
-                <span className="font-medium">MedSigLIP zero-shot</span> read your image as{" "}
-                <span className="font-semibold text-zinc-900">{searchMeta.routing.scores[0]?.label}</span>
-                {searchMeta.routing.scores.length > 1 && (
-                  <span className="text-zinc-400"> (next: {searchMeta.routing.scores[1].label})</span>
-                )}
-                {searchMeta.routing.collection
-                  ? ", so only that collection was searched."
-                  : ", which is not one of the library's image types, so all collections were searched."}
-              </p>
-            )}
-            <ol className="space-y-1">
-              {searchMeta.trace.map((step, i) => (
-                <li key={i} className="flex items-center gap-2">
-                  <span className="w-4 text-right text-zinc-400">{i + 1}.</span>
-                  <ModelChip model={step.model} />
-                  <span className="flex-1">{step.task}</span>
-                  {step.ms > 0 && <span className="tabular-nums text-zinc-400">{(step.ms / 1000).toFixed(1)}s</span>}
-                </li>
+          {isLoading ? (
+            <div className="flex flex-col items-center justify-center gap-4 py-24 text-[var(--mr-text-secondary)] bg-zinc-50/50 rounded-2xl border border-dashed border-zinc-200">
+              <Loader2 className="h-8 w-8 animate-spin text-[var(--mr-action)]" />
+              <p className="text-[15px] font-medium text-zinc-600">Embedding the image and case report, searching and reranking twins…</p>
+            </div>
+          ) : items.length === 0 ? (
+            <div className="flex flex-col items-center justify-center gap-4 py-24 text-[var(--mr-text-secondary)] bg-zinc-50/50 rounded-2xl border border-dashed border-zinc-200">
+              <p className="text-[15px] font-medium text-zinc-600">No twins found. Add an image or more case details, then re-run the search.</p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 gap-5 md:grid-cols-2 xl:grid-cols-3">
+              {items.map((item, idx) => (
+                <MatchCard key={item.id ?? idx} item={item} selected={false} onSelect={() => onSelectMatch(idx)} />
               ))}
-            </ol>
-          </div>
-        )}
-
-        {isLoading ? (
-          <div className="flex flex-col items-center justify-center gap-4 py-24 text-[var(--mr-text-secondary)] bg-zinc-50/50 rounded-2xl border border-dashed border-zinc-200">
-            <Loader2 className="h-8 w-8 animate-spin text-[var(--mr-action)]" />
-            <p className="text-[15px] font-medium text-zinc-600">Embedding the image and case report, searching and reranking twins…</p>
-          </div>
-        ) : items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center gap-4 py-24 text-[var(--mr-text-secondary)] bg-zinc-50/50 rounded-2xl border border-dashed border-zinc-200">
-            <p className="text-[15px] font-medium text-zinc-600">No twins found. Add an image or more case details, then re-run the search.</p>
-          </div>
-        ) : (
-          <div className={cn(
-            "overflow-y-auto flex-1 min-h-0 pb-8 pr-2 -mr-2",
-            selected === null ? "flex flex-col gap-4" : "flex flex-col gap-3"
-          )}>
-            {items.map((item, idx) => (
-              <MatchCard
-                key={item.id ?? idx}
-                item={item}
-                selected={idx === selectedMatch}
-                onSelect={() => onSelectMatch(idx === selectedMatch && selected !== null ? null : idx)}
-                condensed={selected !== null}
-              />
-            ))}
-          </div>
-        )}
-      </div>
+            </div>
+          )}
+        </>
+      )}
 
       {/* Right Detail Container (Big Canvas) */}
       {selected !== null && (
-        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden rounded-2xl border border-zinc-200/80 bg-white shadow-sm animate-in fade-in zoom-in-95 slide-in-from-right-8 duration-500 ease-[cubic-bezier(0.23,1,0.32,1)]">
+        <div className="relative flex w-full flex-col rounded-2xl border border-zinc-200/80 bg-white shadow-sm animate-in fade-in duration-300">
           {/* Canvas Header */}
           <div className="flex items-center justify-between border-b border-zinc-100 bg-zinc-50/50 px-6 py-4 shrink-0">
             <div className="flex items-center gap-3">
               <button
                 onClick={() => onSelectMatch(null)}
-                className="flex items-center justify-center h-8 w-8 rounded-full hover:bg-zinc-200/80 transition-colors text-zinc-500 hover:text-zinc-900"
-                aria-label="Close comparison"
+                className="flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[13px] font-medium text-zinc-700 hover:bg-zinc-100 hover:text-zinc-900 transition-colors"
               >
-                <ChevronLeft className="h-5 w-5" />
+                <ChevronLeft className="h-4 w-4" />
+                Back to matches
               </button>
               <h2 className="text-[17px] font-semibold text-zinc-900">In-depth Comparison</h2>
             </div>
@@ -754,8 +684,8 @@ function MatchesScreen({
           </div>
 
           {/* Canvas Content — highlight any term to have MedGemma explain it */}
-          <SelectionExplainPopover className="flex-1 overflow-y-auto bg-zinc-50/30 p-6 md:p-8">
-            <div className="max-w-[1000px] mx-auto space-y-8 pb-10">
+          <SelectionExplainPopover className="bg-zinc-50/30 p-6 md:p-8">
+            <div className="max-w-[1200px] mx-auto space-y-8 pb-10">
 
               {/* Dual Image Comparison Banner */}
               <div className="grid grid-flow-row md:grid-cols-2 gap-8 items-stretch pt-2">
@@ -1005,7 +935,7 @@ function MatchesScreen({
           {/* Chat FAB */}
           <button
             onClick={() => setShowTwinChat(true)}
-            className="absolute bottom-6 right-6 flex items-center gap-2 px-4 py-2.5 rounded-full bg-zinc-900 text-white text-[13px] font-semibold shadow-xl hover:bg-zinc-800 hover:scale-105 active:scale-95 transition-all z-10"
+            className="fixed bottom-6 right-6 flex items-center gap-2 px-4 py-2.5 rounded-full bg-zinc-900 text-white text-[13px] font-semibold shadow-xl hover:bg-zinc-800 hover:scale-105 active:scale-95 transition-all z-10"
             aria-label="Open clinical copilot"
           >
             <Activity className="h-4 w-4" />
@@ -1837,7 +1767,8 @@ export function DashboardPage() {
     try {
       // The image is optional: without one, the backend matches on the case report
       // (text embeddings + reranker) and MedSigLIP's text-to-image space.
-      const { matches, ...meta } = await searchTwins(file, profileData);
+      // Top 9 twins fill the 3×3 matches grid.
+      const { matches, ...meta } = await searchTwins(file, profileData, "auto", 9);
       setSearchState({ matchResults: matches, searchMeta: meta, lastSearchKey: searchKey(profileData, file) });
       addTrace("Twin search", meta.trace);
     } catch (err) {

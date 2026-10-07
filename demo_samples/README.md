@@ -1,6 +1,6 @@
 # Demo samples
 
-Ten test cases from published case reports that are **not** in the twin library,
+Nine test cases from published case reports that are **not** in the twin library,
 so the app has to find genuine twins rather than the case itself. Each was checked
 end to end: every case returns twins with the same or a closely related diagnosis.
 
@@ -34,8 +34,7 @@ have been at first assessment, before the diagnosis.
 | 6 | `case6_retinal_vasculitis_fundus.webp` + `case6_notes.txt` | Child with a painful red eye and high pressure; structures a dense eye exam | Childhood retinal vascular diseases incl. **Coats' disease** | Bilateral occlusive retinal vasculitis with neovascular glaucoma (PMC11761241) |
 | 7 | `case7_granulomas_skin_biopsy.webp` + `case7_notes.txt` | "?sarcoidosis vs TB": keeps both as suspected diagnoses instead of picking one | Granulomatous diseases: **orbital tuberculosis** (twice) and granulomatous uveitis | Pulmonary tuberculosis with simultaneous lung and skin sarcoidosis (PMC2822819) |
 | 8 | `case8_pulmonary_embolism_aps_ct.webp` + `case8_notes.txt` | Young man with leg pain and breathlessness. Flags **tachycardia, tachypnoea, hypoxia → emergent**, keeps "?CAPS" as suspected, and flags that the image read calls the lungs clear | **5 of 5 pulmonary embolism** cases (top match 76%) | Arterial and venous thrombosis in catastrophic antiphospholipid syndrome (PMC8559656) |
-| 9 | `case9_optic_disc_pit_fundus.webp` + `case9_notes.txt` | Young woman with vision loss in one eye. Structures the OCT findings and flags that the image read misses the macular detachment | **4 of 5** macular or retinal-detachment cases | Optic disc pit maculopathy (PMC12935693) |
-| 10 | `case10_breast_tb_lymph_node.webp` + `case10_notes.txt` | Hard breast lump with axillary nodes, "?malignancy". The twins show **both sides of the differential**: the top twin is tuberculosis, and two others are breast cancers | Tuberculosis (#1) and breast carcinoma (#2, #4) | Breast carcinoma with axillary node metastases **and** tuberculous lymphadenitis in the same nodes (PMC4239443) |
+| 9 | `case9_breast_tb_lymph_node.webp` + `case9_notes.txt` | Hard breast lump with axillary nodes, "?malignancy". The twins show **both sides of the differential**: the top twin is tuberculosis, and two others are breast cancers | Tuberculosis (#1) and breast carcinoma (#2, #4) | Breast carcinoma with axillary node metastases **and** tuberculous lymphadenitis in the same nodes (PMC4239443) |
 
 ## A 15-minute session
 
@@ -51,7 +50,7 @@ have been at first assessment, before the diagnosis.
 4. **AI pipeline drawer (3 min).** Walk through which model did what: Gemma 4,
    MedGemma, MedSigLIP, Qwen3 embeddings and the reranker.
 
-Keep the other cases for questions or a longer session. Case 10 is a strong closer: the AI surfaces both cancer and TB, and the published answer was both.
+Keep the other cases for questions or a longer session. Case 9 is a strong closer: the AI surfaces both cancer and TB, and the published answer was both.
 
 ## Good things to try on any case
 - Highlight a term (e.g. "cavities", "RAPD", "exudative RD") and click **हिंदी** or **मराठी**: MedGemma explains it, then Gemma 4 rewrites it simply for the patient.
@@ -85,5 +84,4 @@ copies must keep that licence.
 | `case6_retinal_vasculitis_fundus.webp` | Rakusiewicz-Krasnodębska K, et al. *Neovascular glaucoma as the first symptom of bilateral occlusive retinal vasculitis in a 4-year-old girl: a case report.* Biomedicines. 2025. [doi:10.3390/biomedicines13010148](https://doi.org/10.3390/biomedicines13010148) | [CC BY](https://creativecommons.org/licenses/by/4.0/) |
 | `case7_granulomas_skin_biopsy.webp` | Mise K, et al. *A rare case of pulmonary tuberculosis with simultaneous pulmonary and skin sarcoidosis: a case report.* Cases J. 2010. [doi:10.1186/1757-1626-3-24](https://doi.org/10.1186/1757-1626-3-24) | [CC BY](https://creativecommons.org/licenses/by/4.0/) |
 | `case8_pulmonary_embolism_aps_ct.webp` | Khan MS, et al. *Concurrent arterial and venous thrombosis in a patient with catastrophic antiphospholipid syndrome.* Caspian J Intern Med. 2021. [doi:10.22088/cjim.12.0.487](https://doi.org/10.22088/cjim.12.0.487) | [CC BY](https://creativecommons.org/licenses/by/4.0/) |
-| `case9_optic_disc_pit_fundus.webp` | Rao P, et al. *Optic disc pit maculopathy treated with human amniotic membrane and autologous internal limiting membrane flap: a case report.* Cureus. 2026. [doi:10.7759/cureus.102347](https://doi.org/10.7759/cureus.102347) | [CC BY](https://creativecommons.org/licenses/by/4.0/) |
-| `case10_breast_tb_lymph_node.webp` | Pandey P, et al. *Infiltrating ductal carcinoma breast, metastatic to ipsilateral axillary lymph nodes harbouring primary tuberculous lymphadenitis: a case report.* Pan Afr Med J. 2014. [doi:10.11604/pamj.2014.18.167.1494](https://doi.org/10.11604/pamj.2014.18.167.1494) | [CC BY](https://creativecommons.org/licenses/by/4.0/) |
+| `case9_breast_tb_lymph_node.webp` | Pandey P, et al. *Infiltrating ductal carcinoma breast, metastatic to ipsilateral axillary lymph nodes harbouring primary tuberculous lymphadenitis: a case report.* Pan Afr Med J. 2014. [doi:10.11604/pamj.2014.18.167.1494](https://doi.org/10.11604/pamj.2014.18.167.1494) | [CC BY](https://creativecommons.org/licenses/by/4.0/) |

@@ -1,3 +1,4 @@
+import type { ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { Check, Info, MessageSquare, RefreshCw } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -11,9 +12,11 @@ interface CaseTopBarProps {
   active: "chat" | "about" | Step;
   /** Provided by the dashboard so Upload/Matches switch step in place instead of navigating. */
   onStepChange?: (next: Step) => void;
+  /** Page-specific controls shown on the right of the bar (e.g. the Chat tab's refresh button). */
+  actions?: ReactNode;
 }
 
-export function CaseTopBar({ active, onStepChange }: CaseTopBarProps) {
+export function CaseTopBar({ active, onStepChange, actions }: CaseTopBarProps) {
   return (
     <header className="relative z-40 shrink-0 border-b border-zinc-200/80 bg-white/80 shadow-[0_1px_3px_rgba(0,0,0,0.02)] backdrop-blur-xl supports-[backdrop-filter]:bg-white/60 print:hidden">
       <div className="mr-container flex h-16 items-center justify-between gap-4 py-3">
@@ -73,7 +76,8 @@ export function CaseTopBar({ active, onStepChange }: CaseTopBarProps) {
           </ol>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
+          {actions}
           <Link
             to="/about"
             className={cn(
