@@ -17,11 +17,12 @@ export function ChatModelsPage() {
           <button
             type="button"
             onClick={() => setFrameKey((key) => key + 1)}
-            className="flex items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-3 py-1.5 text-[13px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900"
+            aria-label="Refresh chat"
+            className="flex shrink-0 items-center gap-1.5 rounded-full border border-zinc-200 bg-white px-2.5 py-1.5 text-[13px] font-medium text-zinc-700 hover:bg-zinc-50 hover:text-zinc-900 sm:px-3"
             title="Reload the chat without reloading the app"
           >
             <RefreshCw className="h-3.5 w-3.5" />
-            Refresh chat
+            <span className="hidden sm:inline">Refresh chat</span>
           </button>
         ) : null}
       />
