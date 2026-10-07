@@ -87,15 +87,17 @@ export function CaseTopBar({ active, onStepChange, actions }: CaseTopBarProps) {
           >
             <Info className="w-3.5 h-3.5" /> How it works
           </Link>
-          <button
-            type="button"
-            onClick={() => window.location.reload()}
-            aria-label="Refresh page"
-            title="Refresh page"
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
-          >
-            <RefreshCw className="h-4 w-4" aria-hidden="true" />
-          </button>
+          {typeof active === "number" && (
+            <button
+              type="button"
+              onClick={() => window.location.reload()}
+              aria-label="Refresh Case-Twin"
+              title="Refresh Case-Twin"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-full text-zinc-500 transition-colors hover:bg-zinc-100 hover:text-zinc-900 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-zinc-900"
+            >
+              <RefreshCw className="h-4 w-4" aria-hidden="true" />
+            </button>
+          )}
         </div>
       </div>
     </header>
