@@ -42,13 +42,17 @@ export function AiPipelinePanel() {
 
     return (
         <>
+            {/* Compact so it sits in the left margin without covering page titles;
+                the label slides out on hover. */}
             <button
                 type="button"
                 onClick={() => setOpen(true)}
-                className="fixed bottom-5 left-5 z-40 flex items-center gap-2 rounded-full border border-zinc-200 bg-white px-4 py-2.5 text-[13px] font-semibold text-zinc-800 shadow-lg hover:bg-zinc-50"
+                aria-label="AI pipeline"
+                title="AI pipeline: which model did what"
+                className="group fixed top-[76px] left-3 z-40 flex h-11 items-center gap-2 rounded-full border border-zinc-200 bg-white pl-3 pr-3 text-[13px] font-semibold text-zinc-800 shadow-lg hover:bg-zinc-50"
             >
-                <Cpu className="h-4 w-4 text-[var(--mr-action)]" />
-                AI pipeline
+                <Cpu className="h-5 w-5 shrink-0 text-[var(--mr-action)]" />
+                <span className="max-w-0 overflow-hidden whitespace-nowrap transition-all duration-200 group-hover:max-w-[120px]">AI pipeline</span>
                 {trace.length > 0 && (
                     <span className="rounded-full bg-[var(--mr-action)] px-1.5 text-[11px] text-white">{trace.length}</span>
                 )}

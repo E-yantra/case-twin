@@ -234,6 +234,15 @@ class TextEndpointTests(unittest.IsolatedAsyncioTestCase):
         response = await _post("/explain_selection", data={"selected_text": "x", "language": "fr"})
         self.assertEqual(response.status_code, 400)
 
+    async def test_chat_twin_keeps_eight_exchanges_of_history(self):
+        history = [{"role": "user" if i % 2 == 0 else "assistant", "content": f"turn {i}"} for i in range(20)]
+        with patch.object(main, "query_text", return_value="ok") as model:
+            await _post("/chat_twin", data={"query": "Next?", "case_text": "narrative", "history": json.dumps(history)})
+        sent = model.call_args.kwargs["history"]
+        self.assertEqual(len(sent), 16)
+        self.assertEqual(sent[0]["content"], "turn 4")
+        self.assertEqual(model.call_args.kwargs["max_tokens"], 700)
+
     async def test_chat_twin_passes_history_and_twin_outcome(self):
         twin = {"outcome": {"detail": "Recovered after drainage"}, "summary": {"conclusion": "Empyema"}}
         history = [{"role": "user", "content": "Earlier question"}, {"role": "assistant", "content": "Earlier answer"}]

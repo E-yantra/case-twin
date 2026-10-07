@@ -426,7 +426,8 @@ sequenceDiagram
 ### 7.2 `POST /search`: hybrid twin search
 
 The inputs are an optional `file` (JPEG, PNG or WebP), an optional `profile`
-(JSON), `collection` (default `auto`) and `limit` (default 10). The request
+(JSON), `collection` (default `auto`) and `limit` (default 10). The frontend
+requests 9 twins, one for each cell of the 3×3 matches grid. The request
 must have an image or a case document of 20 or more characters.
 
 ```mermaid
@@ -491,13 +492,15 @@ MedGemma (text only) gets these inputs:
 
 - The twin profile, from `_profile_context(include_outcome=True)`.
   This text contains demographics, history, findings, diagnosis, treatment,
-  outcome, follow-up and conclusion. It also contains a maximum of 900
+  outcome, follow-up and conclusion. It also contains a maximum of 2,000
   characters of the narrative.
 - The current case, without the outcome fields.
-- A maximum of 6 earlier turns as chat history. Each turn has a maximum of 1,200
-  characters.
+- A maximum of 16 earlier messages (8 question-and-answer exchanges) as chat
+  history. Each message has a maximum of 2,000 characters
+  (`CHAT_HISTORY_TURNS`, `CHAT_TURN_CHARS`).
 
-The prompt limits the answer to the two summaries and to 120 words. The answer
+The prompt limits the answer to the two summaries and to 200 words (maximum 700
+tokens). The answer
 must not give a definite treatment order for the current patient.
 `_clean_reply` removes repeated prompt text and repeated lines. If the call
 fails, the endpoint sends HTTP 502 with the reason.
@@ -565,8 +568,8 @@ the sequence of execution. `output` contains important intermediate text, for
 example the MedGemma image reads during intake.
 
 The frontend adds each trace to a session log (`aiTrace` in the store). The log
-keeps the last 40 entries. The **AI pipeline** drawer shows the log. The matches
-screen also shows the search trace. A skipped or rejected step has a task that
+keeps the last 40 entries. The **AI pipeline** drawer shows the log. It is the
+one place in the UI that shows model details, on every page. A skipped or rejected step has a task that
 tells why, for example "Cross-modal search skipped" or "guardrail".
 
 ---
@@ -582,7 +585,7 @@ react-markdown and sonner (for toast messages).
 |---|---|
 | `/` | `DashboardPage`. A wizard with two steps: **Upload** (case profile and copilot) and **Matches** |
 | `/about` | `AboutPage`. "How it works": the pipeline and the AI concept of each step |
-| `/chat` | `ChatModelsPage`. Open WebUI in an iframe (`VITE_OPENWEBUI_URL`) |
+| `/chat` | `ChatModelsPage`. Open WebUI in an iframe (`VITE_OPENWEBUI_URL`). A **Refresh chat** button in the top bar reloads only the iframe |
 
 The Route and Memo steps are still in `DashboardPage`. But the user cannot get
 to them, because they are comments.
@@ -593,12 +596,12 @@ to them, because they are comments.
 |---|---|
 | `AgenticCopilotPanel` | The intake chat: file drop, notes, status line, chips for captured fields, completeness |
 | `CaseProfileView` | Shows the profile and the **Enhance Profile** button. Contains the explain popover |
-| `MatchesScreen` (in `DashboardPage`) | Shows the twin list, "How these twins were found", the twin detail, "What happened in the twin case" and the comparison matrix |
-| `MatchCard` (in `DashboardPage`) | Shows the score ring, the conclusion and outcome, and `ScoreBreakdown` for each channel (calibrated value; the tooltip shows the raw score) |
+| `MatchesScreen` (in `DashboardPage`) | Shows the top 9 twins as a 3×3 grid (2 or 1 columns on narrow screens). The whole page scrolls. A click opens the twin detail at full width, with **Back to matches**: images, "What happened in the twin case" and the comparison matrix |
+| `MatchCard` (in `DashboardPage`) | A grid tile. Shows the score ring, the conclusion and outcome, and `ScoreBreakdown` for each channel (calibrated value; the tooltip shows the raw score) |
 | `TwinProfileModal` | Shows the full twin profile: history, outcome, treatment, conclusion, findings and images |
 | `TwinChatPanel` | Ask Copilot. Sends the twin profile, the current profile and the chat history to `/chat_twin` |
 | `SelectionExplainPopover` | The user selects text and clicks Explain, Simple, हिंदी or मराठी |
-| `AiPipelinePanel` | Shows the model status (`/ai_status`) and the session trace |
+| `AiPipelinePanel` | A compact floating button at the top left (the label shows on hover) opens a drawer. The drawer shows the model status (`/ai_status`) and the session trace, including the search steps |
 
 ### 9.3 State (`src/store/dashboardStore.ts`)
 
@@ -767,7 +770,7 @@ the UI needs lists. The base URL is `VITE_API_URL` (`src/lib/api.ts`).
 │   └── test_*.py                pytest suites
 ├── data_pipeline/
 │   └── prepare_multicare.py     Sample, quality check, extraction, manifest
-├── demo_samples/                Ten demo cases and the facilitator guide
+├── demo_samples/                Nine demo cases and the facilitator guide
 ├── medsiglip_inference_endpoint/  Legacy Hugging Face endpoint handler (the application does not use it)
 └── src/
     ├── pages/                   DashboardPage, AboutPage, ChatModelsPage
