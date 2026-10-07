@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useDashboardStore } from "@/store/dashboardStore";
+import { SelectionExplainPopover } from "@/components/SelectionExplainPopover";
 import {
     Bot,
     Check,
@@ -459,7 +460,7 @@ export function AgenticCopilotPanel({
             </div>
 
             {/* ── Messages thread ── */}
-            <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
+            <SelectionExplainPopover className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-5 py-4">
                 {state.messages.map(msg => (
                     <MessageBubble
                         key={msg.id}
@@ -468,7 +469,7 @@ export function AgenticCopilotPanel({
                     />
                 ))}
                 <div ref={messagesEndRef} />
-            </div>
+            </SelectionExplainPopover>
 
             {/* ── Drag overlay ── */}
             {isDragOver && (
